@@ -162,16 +162,16 @@ export default function App() {
           </div>
         </section>
 
-        <section aria-labelledby="planner-overview-heading" className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
-          <div className="flex flex-col gap-3 text-center">
-            <span className="mx-auto inline-flex items-center gap-2 rounded-full bg-slate-800/80 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-accent ring-1 ring-accent/30">
+        <section aria-labelledby="planner-overview-heading" className="space-y-8 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <span className="inline-flex items-center gap-2 rounded-full bg-surface/80 px-4 py-2 text-sm font-semibold text-accent ring-1 ring-accent/30">
               <CalendarClock className="h-4 w-4" aria-hidden />
               Offline-first agenda planner
             </span>
-            <h2 id="planner-overview-heading" className="text-2xl font-semibold text-white">
+            <h1 id="planner-overview-heading" className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
               Stay ahead of every class across levels and trimesters
-            </h2>
-            <p className="text-sm text-slate-300">
+            </h1>
+            <p className="max-w-2xl text-lg text-slate-300">
               Build a structured teaching agenda that mirrors your classroom reality. Visualize schedules, craft rich lessons,
               and adapt instantly when plans change.
             </p>
@@ -179,13 +179,20 @@ export default function App() {
           <ul className="grid gap-4 text-left md:grid-cols-3" aria-label="Planner highlights">
             {highlights.map((item) => (
               <li key={item}>
-                <div className="flex flex-col gap-3 rounded-2xl bg-slate-950/40 p-6 ring-1 ring-white/10 backdrop-blur">
+                <div className="flex flex-col gap-3 rounded-2xl bg-surface/60 p-6 ring-1 ring-white/10 backdrop-blur">
                   <Sparkles className="h-5 w-5 text-accent" aria-hidden />
                   <p className="text-sm font-medium text-slate-200">{item}</p>
                 </div>
               </li>
             ))}
           </ul>
+          <div className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl">
+            <h2 className="text-2xl font-semibold">Next up</h2>
+            <p className="max-w-xl text-base text-indigo-100">
+              Configure the academic structure, connect schedules, and power the calendar views. This starter interface ships with
+              TailwindCSS, ESLint, and TypeScript so you can dive straight into building the teacher-focused experience.
+            </p>
+          </div>
         </section>
       </div>
     </AppShell>

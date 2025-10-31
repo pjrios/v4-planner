@@ -87,7 +87,10 @@ export default function App() {
       }
     >
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-10">
-        <section className="grid gap-6 md:grid-cols-3">
+        <section aria-labelledby="daily-focus-heading" className="grid gap-6 md:grid-cols-3">
+          <h2 id="daily-focus-heading" className="sr-only">
+            Daily focus
+          </h2>
           {dailyFocus.map((item) => {
             const Icon = item.icon;
             return (
@@ -102,22 +105,24 @@ export default function App() {
                   <h3 className="text-base font-semibold text-white">{item.title}</h3>
                 </div>
                 <p className="text-sm text-slate-400">{item.description}</p>
-                <div className="flex flex-wrap gap-2">
+                <ul className="flex flex-wrap gap-2" aria-label="Status tags">
                   {item.actions.map((action) => (
-                    <span
-                      key={action}
-                      className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200"
-                    >
-                      {action}
-                    </span>
+                    <li key={action}>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200">
+                        {action}
+                      </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </article>
             );
           })}
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+        <section aria-labelledby="overview-insights-heading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+          <h2 id="overview-insights-heading" className="sr-only">
+            Overview insights
+          </h2>
           <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -157,13 +162,13 @@ export default function App() {
           </div>
         </section>
 
-        <section className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
+        <section aria-labelledby="planner-overview-heading" className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
           <div className="flex flex-col gap-3 text-center">
             <span className="mx-auto inline-flex items-center gap-2 rounded-full bg-slate-800/80 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-accent ring-1 ring-accent/30">
               <CalendarClock className="h-4 w-4" aria-hidden />
               Offline-first agenda planner
             </span>
-            <h2 className="text-2xl font-semibold text-white">
+            <h2 id="planner-overview-heading" className="text-2xl font-semibold text-white">
               Stay ahead of every class across levels and trimesters
             </h2>
             <p className="text-sm text-slate-300">
@@ -171,17 +176,16 @@ export default function App() {
               and adapt instantly when plans change.
             </p>
           </div>
-          <div className="grid gap-4 text-left md:grid-cols-3">
+          <ul className="grid gap-4 text-left md:grid-cols-3" aria-label="Planner highlights">
             {highlights.map((item) => (
-              <div
-                key={item}
-                className="flex flex-col gap-3 rounded-2xl bg-slate-950/40 p-6 ring-1 ring-white/10 backdrop-blur"
-              >
-                <Sparkles className="h-5 w-5 text-accent" aria-hidden />
-                <p className="text-sm font-medium text-slate-200">{item}</p>
-              </div>
+              <li key={item}>
+                <div className="flex flex-col gap-3 rounded-2xl bg-slate-950/40 p-6 ring-1 ring-white/10 backdrop-blur">
+                  <Sparkles className="h-5 w-5 text-accent" aria-hidden />
+                  <p className="text-sm font-medium text-slate-200">{item}</p>
+                </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       </div>
     </AppShell>

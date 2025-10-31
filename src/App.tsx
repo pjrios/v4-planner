@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import { CalendarClock, CopyCheck, GraduationCap, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
+import { TrimesterManager } from './components/trimester';
 
 const planningSections: SidebarSection[] = [
   {
@@ -207,6 +208,8 @@ export default function App() {
             </p>
           </article>
         </section>
+
+        <TrimesterManager />
       </div>
     </AppShell>
   );

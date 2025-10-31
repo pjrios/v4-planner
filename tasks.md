@@ -2,10 +2,10 @@
 
 ## Foundation & Infrastructure
 - [x] Create React + Vite project with Tailwind and ESLint/Prettier. (M0)
-- [ ] Configure GitHub Actions (lint, type check, build).
-- [ ] Install Dexie, date-fns, Zustand/Redux, FullCalendar dependencies.
+- [x] Configure GitHub Actions (lint, type check, build).
+- [x] Install Dexie, date-fns, Zustand/Redux, FullCalendar dependencies.
 - [ ] Scaffold layout components (`AppShell`, `Sidebar`, `TopBar`).
-- [ ] Implement Dexie schema and DataStore utility.
+- [x] Implement Dexie schema and DataStore utility.
 - [ ] Seed demo data loader for development environment.
 
 ## Setup & Data Management

@@ -1,5 +1,6 @@
 import { formatISO } from 'date-fns';
 import { db, DataStore } from './db';
+import { recomputeAllPlaceholders } from './placeholders';
 import type {
   ActivityTemplate,
   Group,
@@ -478,16 +479,19 @@ const lessons: Lesson[] = [
 async function seedDatabase() {
   await db.transaction(
     'rw',
-    db.trimesters,
-    db.holidays,
-    db.levels,
-    db.groups,
-    db.schedules,
-    db.topics,
-    db.lessons,
-    db.rubrics,
-    db.resources,
-    db.templates,
+    [
+      db.trimesters,
+      db.holidays,
+      db.levels,
+      db.groups,
+      db.schedules,
+      db.placeholderSlots,
+      db.topics,
+      db.lessons,
+      db.rubrics,
+      db.resources,
+      db.templates,
+    ],
     async () => {
       await DataStore.bulkSave('trimesters', [trimester2025]);
       await DataStore.bulkSave('holidays', holidays);
@@ -499,6 +503,7 @@ async function seedDatabase() {
       await DataStore.bulkSave('rubrics', rubrics);
       await DataStore.bulkSave('resources', resources);
       await DataStore.bulkSave('templates', templates);
+      await recomputeAllPlaceholders();
     }
   );
 }

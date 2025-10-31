@@ -9,15 +9,15 @@
 - [x] Seed demo data loader for development environment.
 
 ## Setup & Data Management
-- [ ] Build Trimester manager (list/add/edit date ranges, color pick).
-- [ ] Implement Holiday manager with group/level scope selection.
-- [ ] Create Level creation flow (grade number, subject, color).
-- [ ] Generate groups automatically (A/B/C) with edit/remove UI.
-- [ ] Develop schedule builder: weekly grid, add session, conflict validation.
-- [ ] Persist schedules and recompute cached placeholder slots.
+- [x] Build Trimester manager (list/add/edit date ranges, color pick).
+- [x] Implement Holiday manager with group/level scope selection.
+- [x] Create Level creation flow (grade number, subject, color).
+- [x] Generate groups automatically (A/B/C) with edit/remove UI.
+- [x] Develop schedule builder: weekly grid, add session, conflict validation.
+- [x] Persist schedules and recompute cached placeholder slots.
 
 ## Calendar Experience
-- [ ] Integrate FullCalendar with month/week/day views and navigation controls.
+- [x] Integrate FullCalendar with month/week/day views and navigation controls.
 - [ ] Map schedules + lessons into FullCalendar events with color rules.
 - [ ] Add filters for trimester, level, group, lesson status.
 - [ ] Implement calendar range listener to prefetch relevant data.

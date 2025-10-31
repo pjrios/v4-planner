@@ -27,3 +27,8 @@ async function bootstrap() {
 }
 
 void bootstrap();
+ReactDOM.createRoot(rootElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

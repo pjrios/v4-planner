@@ -4,7 +4,7 @@ import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
-import type { CalendarApi, DatesSetArg } from '@fullcalendar/core';
+import type { DatesSetArg } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 
 type CalendarViewType = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
@@ -16,12 +16,18 @@ const VIEW_OPTIONS: { id: CalendarViewType; label: string }[] = [
 ];
 
 export function CalendarWorkspace() {
-  const calendarApiRef = useRef<CalendarApi | null>(null);
+  const calendarRef = useRef<FullCalendarClass | null>(null);
   const [currentTitle, setCurrentTitle] = useState('');
   const [activeView, setActiveView] = useState<CalendarViewType>('dayGridMonth');
 
-  const handleCalendarRef = useCallback((instance: FullCalendarClass | null) => {
-    calendarApiRef.current = instance ? instance.getApi() : null;
+  const syncFromApi = useCallback(() => {
+    const api = calendarRef.current?.getApi();
+    if (!api) {
+      return;
+    }
+
+    setCurrentTitle(api.view.title);
+    setActiveView(api.view.type as CalendarViewType);
   }, []);
 
   const handleDatesSet = useCallback((arg: DatesSetArg) => {
@@ -30,20 +36,30 @@ export function CalendarWorkspace() {
   }, []);
 
   const handlePrev = useCallback(() => {
-    calendarApiRef.current?.prev();
-  }, []);
+    calendarRef.current?.getApi().prev();
+    syncFromApi();
+  }, [syncFromApi]);
 
   const handleNext = useCallback(() => {
-    calendarApiRef.current?.next();
-  }, []);
+    calendarRef.current?.getApi().next();
+    syncFromApi();
+  }, [syncFromApi]);
 
   const handleToday = useCallback(() => {
-    calendarApiRef.current?.today();
-  }, []);
+    const api = calendarRef.current?.getApi();
+    api?.today();
+    syncFromApi();
+  }, [syncFromApi]);
 
   const handleViewChange = useCallback((view: CalendarViewType) => {
-    calendarApiRef.current?.changeView(view);
-  }, []);
+    const api = calendarRef.current?.getApi();
+    if (!api || api.view.type === view) {
+      return;
+    }
+
+    api.changeView(view);
+    syncFromApi();
+  }, [syncFromApi]);
 
   return (
     <section
@@ -117,7 +133,7 @@ export function CalendarWorkspace() {
       </header>
       <div className="rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
         <FullCalendar
-          ref={handleCalendarRef}
+          ref={calendarRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
           initialView="dayGridMonth"
           headerToolbar={false}

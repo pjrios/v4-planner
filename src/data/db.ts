@@ -145,18 +145,39 @@ export const DataStore = {
       throw new Error('Invalid backup payload');
     }
 
-    const collectionNames = Object.keys(tables) as CollectionName[];
+    const collectionNames: CollectionName[] = [
+      'trimesters',
+      'holidays',
+      'levels',
+      'groups',
+      'schedules',
+      'topics',
+      'lessons',
+      'rubrics',
+      'resources',
+      'templates',
+    ];
 
-    await db.transaction('rw', ...collectionNames.map((name) => getTable(name)), async () => {
+    const tablesInTransaction = collectionNames.map((name) => getTable(name));
+    const dataset = parsed.data as Partial<
+      Record<CollectionName, CollectionEntityMap[CollectionName][]>
+    >;
+
+    const restoreCollection = async <K extends CollectionName>(collection: K) => {
+      const table = getTable(collection);
+      const rows = Array.isArray(dataset[collection])
+        ? (dataset[collection] as CollectionEntityMap[K][])
+        : [];
+
+      await table.clear();
+      if (rows.length > 0) {
+        await table.bulkPut(rows);
+      }
+    };
+
+    await db.transaction('rw', tablesInTransaction, async () => {
       for (const name of collectionNames) {
-        const table = getTable(name);
-        const rows = (Array.isArray(parsed.data[name])
-          ? parsed.data[name]
-          : []) as CollectionEntityMap[typeof name][];
-        await table.clear();
-        if (rows.length > 0) {
-          await table.bulkPut(rows);
-        }
+        await restoreCollection(name);
       }
     });
   },

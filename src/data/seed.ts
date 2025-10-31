@@ -478,16 +478,18 @@ const lessons: Lesson[] = [
 async function seedDatabase() {
   await db.transaction(
     'rw',
-    db.trimesters,
-    db.holidays,
-    db.levels,
-    db.groups,
-    db.schedules,
-    db.topics,
-    db.lessons,
-    db.rubrics,
-    db.resources,
-    db.templates,
+    [
+      db.trimesters,
+      db.holidays,
+      db.levels,
+      db.groups,
+      db.schedules,
+      db.topics,
+      db.lessons,
+      db.rubrics,
+      db.resources,
+      db.templates,
+    ],
     async () => {
       await DataStore.bulkSave('trimesters', [trimester2025]);
       await DataStore.bulkSave('holidays', holidays);

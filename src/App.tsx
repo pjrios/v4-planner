@@ -5,6 +5,7 @@ import type { SidebarSection } from './components/layout';
 import { TrimesterManager } from './components/trimester';
 import { HolidayManager } from './components/holiday';
 import { LevelManager } from './components/level';
+import { GroupManager } from './components/group';
 
 const planningSections: SidebarSection[] = [
   {
@@ -214,6 +215,7 @@ export default function App() {
         <div className="space-y-8">
           <TrimesterManager />
           <LevelManager />
+          <GroupManager />
           <HolidayManager />
         </div>
       </div>

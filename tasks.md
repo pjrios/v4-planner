@@ -1,7 +1,7 @@
 # Development Task Backlog
 
 ## Foundation & Infrastructure
-- [ ] Create React + Vite project with Tailwind and ESLint/Prettier.
+- [x] Create React + Vite project with Tailwind and ESLint/Prettier. (M0)
 - [ ] Configure GitHub Actions (lint, type check, build).
 - [ ] Install Dexie, date-fns, Zustand/Redux, FullCalendar dependencies.
 - [ ] Scaffold layout components (`AppShell`, `Sidebar`, `TopBar`).

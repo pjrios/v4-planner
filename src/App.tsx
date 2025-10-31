@@ -131,10 +131,10 @@ export default function App() {
                 foundation
               </span>
             </div>
-            <ul className="mt-6 space-y-3 text-sm text-slate-300">
-              <li>• Split view for navigation, top-level context, and workspace content.</li>
-              <li>• Responsive design that adapts to large desktop or narrow laptop screens.</li>
-              <li>• Theming aligned with the dark UI direction in the planning docs.</li>
+            <ul className="mt-6 list-disc space-y-2 pl-5 text-sm text-slate-300">
+              <li>Split view for navigation, top-level context, and workspace content.</li>
+              <li>Responsive design that adapts to large desktop or narrow laptop screens.</li>
+              <li>Theming aligned with the dark UI direction in the planning docs.</li>
             </ul>
           </div>
 
@@ -148,10 +148,10 @@ export default function App() {
             </div>
             <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Next milestones</h3>
-              <ul className="mt-2 space-y-2 text-sm text-slate-300">
-                <li>• Build setup forms for trimesters, holidays, and group schedules.</li>
-                <li>• Connect calendar views to Dexie data via selectors.</li>
-                <li>• Ship lesson editor scaffolding with activity templates.</li>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-300">
+                <li>Build setup forms for trimesters, holidays, and group schedules.</li>
+                <li>Connect calendar views to Dexie data via selectors.</li>
+                <li>Ship lesson editor scaffolding with activity templates.</li>
               </ul>
             </div>
           </div>

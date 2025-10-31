@@ -13,7 +13,7 @@
 - [x] Implement Holiday manager with group/level scope selection.
 - [x] Create Level creation flow (grade number, subject, color).
 - [x] Generate groups automatically (A/B/C) with edit/remove UI.
-- [ ] Develop schedule builder: weekly grid, add session, conflict validation.
+- [x] Develop schedule builder: weekly grid, add session, conflict validation.
 - [ ] Persist schedules and recompute cached placeholder slots.
 
 ## Calendar Experience

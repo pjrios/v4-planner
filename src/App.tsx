@@ -1,7 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
-import { CalendarClock, CopyCheck, GraduationCap, Layers3 } from 'lucide-react';
+import { CalendarClock, CopyCheck, GraduationCap, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
+import { TrimesterManager } from './components/trimester';
+import { HolidayManager } from './components/holiday';
+import { LevelManager } from './components/level';
 
 const planningSections: SidebarSection[] = [
   {
@@ -66,7 +69,7 @@ const dailyFocus: { icon: LucideIcon; title: string; description: string; action
     description: 'Preview how holidays and events cascade through your weekly sessions.',
     actions: ['up next'],
   },
-import { CalendarClock, Sparkles } from 'lucide-react';
+];
 
 const highlights = [
   'Plan lessons with structured pre/while/post activities',
@@ -87,37 +90,50 @@ export default function App() {
       }
     >
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-10">
-        <section className="grid gap-6 md:grid-cols-3">
-          {dailyFocus.map((item) => {
+        <section aria-labelledby="daily-focus-heading" className="grid gap-6 md:grid-cols-3">
+          <h2 id="daily-focus-heading" className="sr-only">
+            Daily focus
+          </h2>
+          {dailyFocus.map((item, index) => {
             const Icon = item.icon;
+            const titleId = `daily-focus-title-${index}`;
+            const descriptionId = `daily-focus-description-${index}`;
             return (
               <article
                 key={item.title}
                 className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-6 text-slate-200 shadow-lg shadow-slate-950/30"
+                aria-labelledby={titleId}
+                aria-describedby={descriptionId}
               >
                 <div className="flex items-center gap-3">
                   <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
                     <Icon className="h-5 w-5" aria-hidden />
                   </span>
-                  <h3 className="text-base font-semibold text-white">{item.title}</h3>
+                  <h3 id={titleId} className="text-base font-semibold text-white">
+                    {item.title}
+                  </h3>
                 </div>
-                <p className="text-sm text-slate-400">{item.description}</p>
-                <div className="flex flex-wrap gap-2">
+                <p id={descriptionId} className="text-sm text-slate-400">
+                  {item.description}
+                </p>
+                <ul className="flex flex-wrap gap-2" aria-label="Status tags">
                   {item.actions.map((action) => (
-                    <span
-                      key={action}
-                      className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200"
-                    >
-                      {action}
-                    </span>
+                    <li key={action}>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200">
+                        {action}
+                      </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </article>
             );
           })}
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+        <section aria-labelledby="overview-insights-heading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+          <h2 id="overview-insights-heading" className="sr-only">
+            Overview insights
+          </h2>
           <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -131,10 +147,10 @@ export default function App() {
                 foundation
               </span>
             </div>
-            <ul className="mt-6 space-y-3 text-sm text-slate-300">
-              <li>• Split view for navigation, top-level context, and workspace content.</li>
-              <li>• Responsive design that adapts to large desktop or narrow laptop screens.</li>
-              <li>• Theming aligned with the dark UI direction in the planning docs.</li>
+            <ul className="mt-6 list-disc space-y-2 pl-5 text-sm text-slate-300">
+              <li>Split view for navigation, top-level context, and workspace content.</li>
+              <li>Responsive design that adapts to large desktop or narrow laptop screens.</li>
+              <li>Theming aligned with the dark UI direction in the planning docs.</li>
             </ul>
           </div>
 
@@ -148,55 +164,59 @@ export default function App() {
             </div>
             <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Next milestones</h3>
-              <ul className="mt-2 space-y-2 text-sm text-slate-300">
-                <li>• Build setup forms for trimesters, holidays, and group schedules.</li>
-                <li>• Connect calendar views to Dexie data via selectors.</li>
-                <li>• Ship lesson editor scaffolding with activity templates.</li>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-300">
+                <li>Build setup forms for trimesters, holidays, and group schedules.</li>
+                <li>Connect calendar views to Dexie data via selectors.</li>
+                <li>Ship lesson editor scaffolding with activity templates.</li>
               </ul>
             </div>
           </div>
         </section>
-      </div>
-    </AppShell>
-    <div className="min-h-screen bg-background text-slate-100">
-      <main className="flex flex-col items-center justify-center px-6 py-16">
-        <div className="mx-auto flex max-w-3xl flex-col gap-10 text-center">
-          <div className="flex flex-col items-center gap-4">
+
+        <section aria-labelledby="planner-overview-heading" className="space-y-8 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
+          <div className="flex flex-col items-center gap-4 text-center">
             <span className="inline-flex items-center gap-2 rounded-full bg-surface/80 px-4 py-2 text-sm font-semibold text-accent ring-1 ring-accent/30">
-              <CalendarClock className="h-4 w-4" />
+              <CalendarClock className="h-4 w-4" aria-hidden />
               Offline-first agenda planner
             </span>
-            <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
+            <h1 id="planner-overview-heading" className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
               Stay ahead of every class across levels and trimesters
             </h1>
             <p className="max-w-2xl text-lg text-slate-300">
-              Build a structured teaching agenda that mirrors your classroom reality. Visualize
-              schedules, craft rich lessons, and adapt instantly when plans change.
+              Build a structured teaching agenda that mirrors your classroom reality. Visualize schedules, craft rich lessons,
+              and adapt instantly when plans change.
             </p>
           </div>
-
-          <div className="grid gap-4 text-left sm:grid-cols-3">
+          <ul className="grid gap-4 text-left md:grid-cols-3" aria-label="Planner highlights">
             {highlights.map((item) => (
-              <div
-                key={item}
-                className="flex flex-col gap-3 rounded-2xl bg-surface/60 p-6 ring-1 ring-white/10 backdrop-blur"
-              >
-                <Sparkles className="h-5 w-5 text-accent" />
-                <p className="text-sm font-medium text-slate-200">{item}</p>
-              </div>
+              <li key={item}>
+                <div className="flex flex-col gap-3 rounded-2xl bg-surface/60 p-6 ring-1 ring-white/10 backdrop-blur">
+                  <Sparkles className="h-5 w-5 text-accent" aria-hidden />
+                  <p className="text-sm font-medium text-slate-200">{item}</p>
+                </div>
+              </li>
             ))}
-          </div>
-
-          <div className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl">
-            <h2 className="text-2xl font-semibold">Next up</h2>
+          </ul>
+          <article
+            aria-labelledby="next-up-heading"
+            className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl"
+          >
+            <h2 id="next-up-heading" className="text-2xl font-semibold">
+              Next up
+            </h2>
             <p className="max-w-xl text-base text-indigo-100">
-              Configure the academic structure, connect schedules, and power the calendar views.
-              This starter interface ships with TailwindCSS, ESLint, and TypeScript so you can dive
-              straight into building the teacher-focused experience.
+              Configure the academic structure, connect schedules, and power the calendar views. This starter interface ships with
+              TailwindCSS, ESLint, and TypeScript so you can dive straight into building the teacher-focused experience.
             </p>
-          </div>
+          </article>
+        </section>
+
+        <div className="space-y-8">
+          <TrimesterManager />
+          <LevelManager />
+          <HolidayManager />
         </div>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

@@ -11,7 +11,7 @@
 ## Setup & Data Management
 - [x] Build Trimester manager (list/add/edit date ranges, color pick).
 - [x] Implement Holiday manager with group/level scope selection.
-- [ ] Create Level creation flow (grade number, subject, color).
+- [x] Create Level creation flow (grade number, subject, color).
 - [ ] Generate groups automatically (A/B/C) with edit/remove UI.
 - [ ] Develop schedule builder: weekly grid, add session, conflict validation.
 - [ ] Persist schedules and recompute cached placeholder slots.

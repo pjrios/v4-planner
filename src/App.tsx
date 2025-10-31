@@ -4,6 +4,7 @@ import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
 import { TrimesterManager } from './components/trimester';
 import { HolidayManager } from './components/holiday';
+import { LevelManager } from './components/level';
 
 const planningSections: SidebarSection[] = [
   {
@@ -212,6 +213,7 @@ export default function App() {
 
         <div className="space-y-8">
           <TrimesterManager />
+          <LevelManager />
           <HolidayManager />
         </div>
       </div>

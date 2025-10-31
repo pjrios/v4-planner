@@ -15,6 +15,12 @@ Project workspace for an offline-first teaching agenda. See [plan.md](./plan.md)
 
 The project is scaffolded with **Vite + React + TypeScript** and includes TailwindCSS, ESLint, and Prettier-friendly lint rules. When running locally on a MacBook Air M1, install a recent LTS version of Node.js (>= 18) via [fnm](https://github.com/Schniz/fnm) or [nvm](https://github.com/nvm-sh/nvm) to ensure native dependencies compile correctly on Apple Silicon.
 
+### Development data
+
+- In development (`npm run dev`) the app seeds a representative dataset (trimesters, groups, schedules, lessons, rubrics, and templates) into IndexedDB the first time it loads.
+- Clear browser storage or run `await db.delete()` in the console to reset the sample data if you want to start fresh.
+- The seeding utility is skipped automatically if records already exist, so it will not overwrite local planning work.
+
 ## Available scripts
 
 - `npm run dev` – start the Vite development server.

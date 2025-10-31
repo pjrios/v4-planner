@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import { CalendarClock, CopyCheck, GraduationCap, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
+import { TrimesterManager } from './components/trimester';
 
 const planningSections: SidebarSection[] = [
   {
@@ -91,20 +92,28 @@ export default function App() {
           <h2 id="daily-focus-heading" className="sr-only">
             Daily focus
           </h2>
-          {dailyFocus.map((item) => {
+          {dailyFocus.map((item, index) => {
             const Icon = item.icon;
+            const titleId = `daily-focus-title-${index}`;
+            const descriptionId = `daily-focus-description-${index}`;
             return (
               <article
                 key={item.title}
                 className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-6 text-slate-200 shadow-lg shadow-slate-950/30"
+                aria-labelledby={titleId}
+                aria-describedby={descriptionId}
               >
                 <div className="flex items-center gap-3">
                   <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
                     <Icon className="h-5 w-5" aria-hidden />
                   </span>
-                  <h3 className="text-base font-semibold text-white">{item.title}</h3>
+                  <h3 id={titleId} className="text-base font-semibold text-white">
+                    {item.title}
+                  </h3>
                 </div>
-                <p className="text-sm text-slate-400">{item.description}</p>
+                <p id={descriptionId} className="text-sm text-slate-400">
+                  {item.description}
+                </p>
                 <ul className="flex flex-wrap gap-2" aria-label="Status tags">
                   {item.actions.map((action) => (
                     <li key={action}>
@@ -186,14 +195,21 @@ export default function App() {
               </li>
             ))}
           </ul>
-          <div className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl">
-            <h2 className="text-2xl font-semibold">Next up</h2>
+          <article
+            aria-labelledby="next-up-heading"
+            className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl"
+          >
+            <h2 id="next-up-heading" className="text-2xl font-semibold">
+              Next up
+            </h2>
             <p className="max-w-xl text-base text-indigo-100">
               Configure the academic structure, connect schedules, and power the calendar views. This starter interface ships with
               TailwindCSS, ESLint, and TypeScript so you can dive straight into building the teacher-focused experience.
             </p>
-          </div>
+          </article>
         </section>
+
+        <TrimesterManager />
       </div>
     </AppShell>
   );

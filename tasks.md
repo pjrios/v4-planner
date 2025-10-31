@@ -14,7 +14,7 @@
 - [x] Create Level creation flow (grade number, subject, color).
 - [x] Generate groups automatically (A/B/C) with edit/remove UI.
 - [x] Develop schedule builder: weekly grid, add session, conflict validation.
-- [ ] Persist schedules and recompute cached placeholder slots.
+- [x] Persist schedules and recompute cached placeholder slots.
 
 ## Calendar Experience
 - [ ] Integrate FullCalendar with month/week/day views and navigation controls.

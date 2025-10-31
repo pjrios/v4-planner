@@ -9,6 +9,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { DataStore } from '../../data/db';
+import { recomputePlaceholdersForSchedule } from '../../data/placeholders';
 import type { Group, Level, Schedule, ScheduleSession, Trimester } from '../../data/types';
 
 const DAYS_OF_WEEK = [
@@ -227,7 +228,12 @@ export function ScheduleBuilder() {
       await DataStore.save('schedules', payload);
       const allSchedules = await DataStore.getAll('schedules');
       setSchedules(allSchedules);
-      setFeedback({ type: 'success', message: 'Schedule saved successfully.' });
+      const placeholderCount = await recomputePlaceholdersForSchedule(payload);
+      const noun = placeholderCount === 1 ? 'placeholder slot' : 'placeholder slots';
+      setFeedback({
+        type: 'success',
+        message: `Schedule saved. ${placeholderCount} ${noun} refreshed.`,
+      });
     } catch (error) {
       console.error('Failed to save schedule', error);
       setFeedback({

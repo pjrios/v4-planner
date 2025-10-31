@@ -1,5 +1,6 @@
 import { formatISO } from 'date-fns';
 import { db, DataStore } from './db';
+import { recomputeAllPlaceholders } from './placeholders';
 import type {
   ActivityTemplate,
   Group,
@@ -484,6 +485,7 @@ async function seedDatabase() {
       db.levels,
       db.groups,
       db.schedules,
+      db.placeholderSlots,
       db.topics,
       db.lessons,
       db.rubrics,
@@ -501,6 +503,7 @@ async function seedDatabase() {
       await DataStore.bulkSave('rubrics', rubrics);
       await DataStore.bulkSave('resources', resources);
       await DataStore.bulkSave('templates', templates);
+      await recomputeAllPlaceholders();
     }
   );
 }

@@ -6,6 +6,7 @@ import type {
   Holiday,
   Lesson,
   Level,
+  PlaceholderSlot,
   Resource,
   Rubric,
   Schedule,
@@ -19,6 +20,7 @@ export class AgendaPlannerDB extends Dexie {
   levels!: Table<Level, string>;
   groups!: Table<Group, string>;
   schedules!: Table<Schedule, string>;
+  placeholderSlots!: Table<PlaceholderSlot, string>;
   topics!: Table<Topic, string>;
   lessons!: Table<Lesson, string>;
   rubrics!: Table<Rubric, string>;
@@ -40,6 +42,10 @@ export class AgendaPlannerDB extends Dexie {
       resources: 'id,attachedTo,attachedId',
       templates: 'id,phase,name',
     });
+
+    this.version(2).stores({
+      placeholderSlots: 'id,scheduleId,groupId,trimesterId,date',
+    });
   }
 }
 
@@ -51,6 +57,7 @@ export type CollectionName =
   | 'levels'
   | 'groups'
   | 'schedules'
+  | 'placeholderSlots'
   | 'topics'
   | 'lessons'
   | 'rubrics'
@@ -63,6 +70,7 @@ type CollectionEntityMap = {
   levels: Level;
   groups: Group;
   schedules: Schedule;
+  placeholderSlots: PlaceholderSlot;
   topics: Topic;
   lessons: Lesson;
   rubrics: Rubric;
@@ -76,6 +84,7 @@ const tables: { [K in CollectionName]: Table<CollectionEntityMap[K], string> } =
   levels: db.levels,
   groups: db.groups,
   schedules: db.schedules,
+  placeholderSlots: db.placeholderSlots,
   topics: db.topics,
   lessons: db.lessons,
   rubrics: db.rubrics,
@@ -122,6 +131,7 @@ export const DataStore = {
       levels: await db.levels.toArray(),
       groups: await db.groups.toArray(),
       schedules: await db.schedules.toArray(),
+      placeholderSlots: await db.placeholderSlots.toArray(),
       topics: await db.topics.toArray(),
       lessons: await db.lessons.toArray(),
       rubrics: await db.rubrics.toArray(),
@@ -151,6 +161,7 @@ export const DataStore = {
       'levels',
       'groups',
       'schedules',
+      'placeholderSlots',
       'topics',
       'lessons',
       'rubrics',

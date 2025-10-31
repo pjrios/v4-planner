@@ -3,6 +3,7 @@ import { CalendarClock, CopyCheck, GraduationCap, Layers3, Sparkles } from 'luci
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
 import { TrimesterManager } from './components/trimester';
+import { HolidayManager } from './components/holiday';
 
 const planningSections: SidebarSection[] = [
   {
@@ -209,7 +210,10 @@ export default function App() {
           </article>
         </section>
 
-        <TrimesterManager />
+        <div className="space-y-8">
+          <TrimesterManager />
+          <HolidayManager />
+        </div>
       </div>
     </AppShell>
   );

@@ -7,6 +7,7 @@ import { HolidayManager } from './components/holiday';
 import { LevelManager } from './components/level';
 import { GroupManager } from './components/group';
 import { ScheduleBuilder } from './components/schedule';
+import { CalendarWorkspace } from './components/calendar';
 
 const planningSections: SidebarSection[] = [
   {
@@ -214,6 +215,7 @@ export default function App() {
         </section>
 
         <div className="space-y-8">
+          <CalendarWorkspace />
           <TrimesterManager />
           <LevelManager />
           <GroupManager />

@@ -17,7 +17,7 @@
 - [x] Persist schedules and recompute cached placeholder slots.
 
 ## Calendar Experience
-- [ ] Integrate FullCalendar with month/week/day views and navigation controls.
+- [x] Integrate FullCalendar with month/week/day views and navigation controls.
 - [ ] Map schedules + lessons into FullCalendar events with color rules.
 - [ ] Add filters for trimester, level, group, lesson status.
 - [ ] Implement calendar range listener to prefetch relevant data.

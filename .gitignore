@@ -13,3 +13,4 @@ pnpm-debug.log*
 *.log
 coverage
 /dist
+*.tsbuildinfo

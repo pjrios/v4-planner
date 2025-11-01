@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeCheck, BookOpen, CalendarClock, Layers3, Settings } from 'lucide-react';
+import { BadgeCheck, BookOpen, CalendarClock, Layers3, LayoutDashboard, Settings } from 'lucide-react';
 
 export interface SidebarSection {
   id: string;
@@ -22,6 +22,8 @@ export interface NavigationItem {
 export interface SidebarProps {
   sections?: SidebarSection[];
   footer?: ReactNode;
+  activeItemId?: string;
+  onSelectItem?: (itemId: string) => void;
 }
 
 const defaultSections: SidebarSection[] = [
@@ -30,11 +32,16 @@ const defaultSections: SidebarSection[] = [
     label: 'Planning',
     items: [
       {
+        id: 'overview',
+        label: 'Overview',
+        description: 'Hero, highlights, daily focus',
+        icon: LayoutDashboard,
+      },
+      {
         id: 'calendar',
         label: 'Calendar',
         description: 'Month, week, and day views',
         icon: CalendarClock,
-        isActive: true,
       },
       {
         id: 'lessons',
@@ -61,6 +68,12 @@ const defaultSections: SidebarSection[] = [
         icon: BadgeCheck,
         badge: 'soon',
       },
+    ],
+  },
+  {
+    id: 'settings',
+    label: 'Settings',
+    items: [
       {
         id: 'settings',
         label: 'Settings',
@@ -71,7 +84,7 @@ const defaultSections: SidebarSection[] = [
   },
 ];
 
-export function Sidebar({ sections = defaultSections, footer }: SidebarProps) {
+export function Sidebar({ sections = defaultSections, footer, activeItemId, onSelectItem }: SidebarProps) {
   return (
     <div className="flex h-full flex-col justify-between">
       <div className="space-y-8 p-6">
@@ -93,29 +106,52 @@ export function Sidebar({ sections = defaultSections, footer }: SidebarProps) {
                 <ul className="space-y-2">
                   {section.items.map((item) => {
                     const Icon = item.icon;
+                    const isActive = activeItemId ? item.id === activeItemId : item.isActive;
+                    const handleClick = () => {
+                      if (onSelectItem) {
+                        onSelectItem(item.id);
+                      }
+                    };
+                    const itemClasses = `group flex w-full flex-col gap-1 rounded-2xl border border-transparent px-4 py-3 text-left transition hover:border-white/10 hover:bg-white/5 ${
+                      isActive ? 'border-white/10 bg-white/5' : ''
+                    }`;
                     return (
                       <li key={item.id}>
-                        <a
-                          href={item.href ?? '#'}
-                          className={`group flex flex-col gap-1 rounded-2xl border border-transparent px-4 py-3 transition hover:border-white/10 hover:bg-white/5 ${
-                            item.isActive ? 'border-white/10 bg-white/5' : ''
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
-                              {Icon ? <Icon className="h-4 w-4 text-accent" aria-hidden /> : null}
-                              {item.label}
+                        {onSelectItem ? (
+                          <button type="button" onClick={handleClick} className={itemClasses}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
+                                {Icon ? <Icon className="h-4 w-4 text-accent" aria-hidden /> : null}
+                                {item.label}
+                              </div>
+                              {item.badge ? (
+                                <span className="rounded-full bg-white/10 px-2 text-xs uppercase tracking-wide text-slate-200">
+                                  {item.badge}
+                                </span>
+                              ) : null}
                             </div>
-                            {item.badge ? (
-                              <span className="rounded-full bg-white/10 px-2 text-xs uppercase tracking-wide text-slate-200">
-                                {item.badge}
-                              </span>
+                            {item.description ? (
+                              <p className="text-xs text-slate-400">{item.description}</p>
                             ) : null}
-                          </div>
-                          {item.description ? (
-                            <p className="text-xs text-slate-400">{item.description}</p>
-                          ) : null}
-                        </a>
+                          </button>
+                        ) : (
+                          <a href={item.href ?? '#'} className={itemClasses}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
+                                {Icon ? <Icon className="h-4 w-4 text-accent" aria-hidden /> : null}
+                                {item.label}
+                              </div>
+                              {item.badge ? (
+                                <span className="rounded-full bg-white/10 px-2 text-xs uppercase tracking-wide text-slate-200">
+                                  {item.badge}
+                                </span>
+                              ) : null}
+                            </div>
+                            {item.description ? (
+                              <p className="text-xs text-slate-400">{item.description}</p>
+                            ) : null}
+                          </a>
+                        )}
                       </li>
                     );
                   })}

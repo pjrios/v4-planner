@@ -1,4 +1,4 @@
-import { addDays, format, getISODay, parseISO } from 'date-fns';
+import { addDays, format, getISODay, parseISO, startOfDay } from 'date-fns';
 import { db, DataStore } from './db';
 import type { Group, Holiday, PlaceholderSlot, Schedule, Trimester } from './types';
 
@@ -11,6 +11,11 @@ interface HolidayWindow {
   appliesToAll: boolean;
   targets: Set<string>;
 }
+
+type PlaceholderGenerationRange = {
+  start: Date;
+  end: Date;
+};
 
 function normalizeTarget(value: string) {
   return value.trim().toLowerCase();
@@ -64,16 +69,113 @@ function formatDate(date: Date) {
   return format(date, ISO_DATE_FORMAT);
 }
 
+function normalizeGenerationBounds(
+  trimester: Trimester,
+  override?: PlaceholderGenerationRange | null
+) {
+  const defaultStart = parseISO(trimester.startDate);
+  const defaultEnd = parseISO(trimester.endDate);
+
+  if (
+    Number.isNaN(defaultStart.getTime()) ||
+    Number.isNaN(defaultEnd.getTime()) ||
+    defaultStart > defaultEnd
+  ) {
+    return null as PlaceholderGenerationRange | null;
+  }
+
+  const startSource = override?.start ?? defaultStart;
+  const endSource = override?.end ?? defaultEnd;
+  const normalizedStart = startOfDay(startSource);
+  const normalizedEnd = startOfDay(endSource);
+
+  if (normalizedStart > normalizedEnd) {
+    return null;
+  }
+
+  return { start: normalizedStart, end: normalizedEnd } satisfies PlaceholderGenerationRange;
+}
+
+function shiftOccurrenceForward(
+  date: Date,
+  rangeEnd: Date,
+  holidays: HolidayWindow[]
+): Date | null {
+  let candidate = startOfDay(date);
+  const boundary = startOfDay(rangeEnd);
+  let guard = 0;
+
+  while (candidate <= boundary && guard < 512) {
+    const blockingWindow = holidays.find((window) => dateFallsInside(candidate, window));
+    if (!blockingWindow) {
+      return candidate;
+    }
+
+    const nextCandidate = startOfDay(addDays(blockingWindow.end, 1));
+    if (nextCandidate <= candidate) {
+      candidate = addDays(candidate, 1);
+    } else {
+      candidate = nextCandidate;
+    }
+    guard += 1;
+  }
+
+  if (candidate > boundary) {
+    return null;
+  }
+
+  return candidate;
+}
+
+export function getActiveTrimesterSpan(trimesters: Trimester[]) {
+  let earliest: Date | null = null;
+  let latest: Date | null = null;
+
+  for (const trimester of trimesters) {
+    if (trimester.status === 'completed') {
+      continue;
+    }
+
+    const start = parseISO(trimester.startDate);
+    const end = parseISO(trimester.endDate);
+
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime()) ||
+      start > end
+    ) {
+      continue;
+    }
+
+    const normalizedStart = startOfDay(start);
+    const normalizedEnd = startOfDay(end);
+
+    if (!earliest || normalizedStart < earliest) {
+      earliest = normalizedStart;
+    }
+
+    if (!latest || normalizedEnd > latest) {
+      latest = normalizedEnd;
+    }
+  }
+
+  if (!earliest || !latest) {
+    return null as PlaceholderGenerationRange | null;
+  }
+
+  return { start: earliest, end: latest } satisfies PlaceholderGenerationRange;
+}
+
 export function computePlaceholderSlotsForSchedule(
   schedule: Schedule,
   trimester: Trimester,
   group: Group,
-  holidayWindows: HolidayWindow[]
+  holidayWindows: HolidayWindow[],
+  generationRange?: PlaceholderGenerationRange | null
 ) {
-  const start = parseISO(trimester.startDate);
-  const end = parseISO(trimester.endDate);
+  const bounds = normalizeGenerationBounds(trimester, generationRange);
 
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+  if (!bounds) {
     return [] as PlaceholderSlot[];
   }
 
@@ -84,25 +186,28 @@ export function computePlaceholderSlotsForSchedule(
     const durationMinutes = Math.max(0, toMinutes(session.endTime) - toMinutes(session.startTime));
     if (durationMinutes === 0) continue;
 
-    let occurrence = computeFirstOccurrence(start, session.dayOfWeek);
-    while (occurrence <= end) {
-      const isBlocked = relevantHolidays.some((window) => dateFallsInside(occurrence, window));
-      if (!isBlocked) {
-        const dateString = formatDate(occurrence);
-        const id = `placeholder_${schedule.id}_${dateString}_${session.startTime}_${session.endTime}`;
-        slots.push({
-          id,
-          scheduleId: schedule.id,
-          groupId: schedule.groupId,
-          trimesterId: schedule.trimesterId,
-          date: dateString,
-          dayOfWeek: session.dayOfWeek,
-          startTime: session.startTime,
-          endTime: session.endTime,
-          durationMinutes,
-          source: 'schedule',
-        });
+    let occurrence = computeFirstOccurrence(bounds.start, session.dayOfWeek);
+    while (occurrence <= bounds.end) {
+      const shifted = shiftOccurrenceForward(occurrence, bounds.end, relevantHolidays);
+      if (!shifted) {
+        break;
       }
+
+      const dateString = formatDate(shifted);
+      const id = `placeholder_${schedule.id}_${dateString}_${session.startTime}_${session.endTime}`;
+      slots.push({
+        id,
+        scheduleId: schedule.id,
+        groupId: schedule.groupId,
+        trimesterId: schedule.trimesterId,
+        date: dateString,
+        dayOfWeek: session.dayOfWeek,
+        startTime: session.startTime,
+        endTime: session.endTime,
+        durationMinutes,
+        source: 'schedule',
+      });
+
       occurrence = addDays(occurrence, 7);
     }
   }
@@ -111,19 +216,22 @@ export function computePlaceholderSlotsForSchedule(
 }
 
 export async function recomputePlaceholdersForSchedule(schedule: Schedule) {
-  const [trimester, group, holidays] = await Promise.all([
+  const [trimester, group, holidays, trimesters] = await Promise.all([
     DataStore.get('trimesters', schedule.trimesterId),
     DataStore.get('groups', schedule.groupId),
     DataStore.getAll('holidays'),
+    DataStore.getAll('trimesters'),
   ]);
 
   const holidayWindows = holidays
     .map(mapHolidayToWindow)
     .filter((window): window is HolidayWindow => window !== null);
 
+  const generationRange = getActiveTrimesterSpan(trimesters ?? []);
+
   const placeholders =
     trimester && group
-      ? computePlaceholderSlotsForSchedule(schedule, trimester, group, holidayWindows)
+      ? computePlaceholderSlotsForSchedule(schedule, trimester, group, holidayWindows, generationRange)
       : ([] as PlaceholderSlot[]);
 
   await db.transaction('rw', [db.placeholderSlots], async () => {
@@ -149,6 +257,7 @@ export async function recomputeAllPlaceholders() {
   const holidayWindows = holidays
     .map(mapHolidayToWindow)
     .filter((window): window is HolidayWindow => window !== null);
+  const generationRange = getActiveTrimesterSpan(trimesters);
 
   const allPlaceholders: PlaceholderSlot[] = [];
 
@@ -158,7 +267,13 @@ export async function recomputeAllPlaceholders() {
     if (!trimester || !group) {
       continue;
     }
-    const placeholders = computePlaceholderSlotsForSchedule(schedule, trimester, group, holidayWindows);
+    const placeholders = computePlaceholderSlotsForSchedule(
+      schedule,
+      trimester,
+      group,
+      holidayWindows,
+      generationRange
+    );
     allPlaceholders.push(...placeholders);
   }
 
@@ -193,6 +308,10 @@ export function getExpectedSlotsForRange(
     .filter((window): window is HolidayWindow => window !== null);
 
   const results: PlaceholderSlot[] = [];
+  const generationRange = {
+    start: startOfDay(startBound),
+    end: startOfDay(inclusiveEnd),
+  } satisfies PlaceholderGenerationRange;
 
   for (const schedule of schedules) {
     const trimester = trimesterMap.get(schedule.trimesterId);
@@ -202,7 +321,13 @@ export function getExpectedSlotsForRange(
       continue;
     }
 
-    const slots = computePlaceholderSlotsForSchedule(schedule, trimester, group, holidayWindows);
+    const slots = computePlaceholderSlotsForSchedule(
+      schedule,
+      trimester,
+      group,
+      holidayWindows,
+      generationRange
+    );
 
     for (const slot of slots) {
       const occurrence = parseISO(slot.date);

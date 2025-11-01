@@ -20,7 +20,7 @@
 - [x] Integrate FullCalendar with month/week/day views and navigation controls.
 - [x] Map schedules + lessons into FullCalendar events with color rules.
 - [x] Add filters for trimester, level, group, lesson status.
-- [ ] Implement calendar range listener to prefetch relevant data.
+- [x] Implement calendar range listener to prefetch relevant data.
 - [ ] Design condensed month view rendering (chips, overflow count).
 - [ ] Create day/week tooltips and keyboard shortcuts.
 

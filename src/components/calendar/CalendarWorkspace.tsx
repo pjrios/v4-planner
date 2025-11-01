@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { addDays, format } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -51,6 +52,9 @@ type CalendarDataState = {
   placeholders: PlaceholderSlot[];
   topics: Topic[];
 };
+
+const ISO_DATE_FORMAT = 'yyyy-MM-dd';
+const RANGE_PADDING_DAYS = 7;
 
 function toDateTime(date: string, time: string) {
   if (!time) {
@@ -201,77 +205,133 @@ export function CalendarWorkspace() {
   const [selectedStatuses, setSelectedStatuses] = useState<LessonStatus[]>(() =>
     LESSON_STATUS_OPTIONS.map((option) => option.id)
   );
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isBaseLoading, setIsBaseLoading] = useState(true);
+  const [isRangeLoading, setIsRangeLoading] = useState(true);
+  const [baseError, setBaseError] = useState<string | null>(null);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
+  const latestRequestedRange = useRef<string | null>(null);
+  const inFlightRangeKeys = useRef(new Set<string>());
 
-  const loadCalendarData = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(null);
+  const loadStaticCollections = useCallback(async () => {
+    setIsBaseLoading(true);
+    setBaseError(null);
 
     try {
-      const [trimesters, groups, levels, lessons, placeholders, topics] = await Promise.all([
+      const [trimesters, groups, levels, topics] = await Promise.all([
         DataStore.getAll('trimesters'),
         DataStore.getAll('groups'),
         DataStore.getAll('levels'),
-        DataStore.getAll('lessons'),
-        DataStore.getAll('placeholderSlots'),
         DataStore.getAll('topics'),
       ]);
 
-      setCalendarData({
+      setCalendarData((current) => ({
+        ...current,
         trimesters,
         groups,
         levels,
-        lessons,
-        placeholders,
         topics,
-      });
+      }));
+      setBaseError(null);
     } catch (error) {
-      console.error('Failed to load calendar events', error);
-      setLoadError('Unable to load calendar data. Please try again.');
-      setCalendarData({
+      console.error('Failed to load calendar references', error);
+      setBaseError('Unable to load calendar setup data. Please try again.');
+      setCalendarData((current) => ({
+        ...current,
         trimesters: [],
         groups: [],
         levels: [],
-        lessons: [],
-        placeholders: [],
         topics: [],
-      });
+      }));
     } finally {
-      setIsLoading(false);
+      setIsBaseLoading(false);
     }
   }, []);
 
-  const syncFromApi = useCallback(() => {
-    const api = calendarRef.current?.getApi();
-    if (!api) {
-      return;
-    }
+  const prefetchRange = useCallback(
+    async (startInput: Date, endInput: Date) => {
+      const [rangeStart, rangeEnd] =
+        startInput.getTime() <= endInput.getTime() ? [startInput, endInput] : [endInput, startInput];
+      const inclusiveEnd =
+        rangeEnd.getTime() === rangeStart.getTime() ? rangeEnd : addDays(rangeEnd, -1);
+      const paddedStart = format(addDays(rangeStart, -RANGE_PADDING_DAYS), ISO_DATE_FORMAT);
+      const paddedEnd = format(addDays(inclusiveEnd, RANGE_PADDING_DAYS), ISO_DATE_FORMAT);
+      const rangeKey = `${paddedStart}_${paddedEnd}`;
 
-    setCurrentTitle(api.view.title);
-    setActiveView(api.view.type as CalendarViewType);
-  }, []);
+      const previous = lastPrefetchedRange.current;
+      if (previous && paddedStart >= previous.start && paddedEnd <= previous.end) {
+        latestRequestedRange.current = rangeKey;
+        setRangeError(null);
+        setIsRangeLoading(false);
+        return;
+      }
 
-  const handleDatesSet = useCallback((arg: DatesSetArg) => {
-    setCurrentTitle(arg.view.title);
-    setActiveView(arg.view.type as CalendarViewType);
-  }, []);
+      if (inFlightRangeKeys.current.has(rangeKey)) {
+        latestRequestedRange.current = rangeKey;
+        return;
+      }
+
+      latestRequestedRange.current = rangeKey;
+      inFlightRangeKeys.current.add(rangeKey);
+      setIsRangeLoading(true);
+      setRangeError(null);
+
+      try {
+        const [lessons, placeholders] = await Promise.all([
+          DataStore.getInDateRange('lessons', paddedStart, paddedEnd),
+          DataStore.getInDateRange('placeholderSlots', paddedStart, paddedEnd),
+        ]);
+
+        if (latestRequestedRange.current === rangeKey) {
+          setCalendarData((current) => ({
+            ...current,
+            lessons,
+            placeholders,
+          }));
+          lastPrefetchedRange.current = { start: paddedStart, end: paddedEnd };
+          setRangeError(null);
+        }
+      } catch (error) {
+        if (latestRequestedRange.current === rangeKey) {
+          console.error('Failed to load calendar events for range', error);
+          setRangeError('Unable to load calendar events for the selected range. Please try again.');
+          setCalendarData((current) => ({
+            ...current,
+            lessons: [],
+            placeholders: [],
+          }));
+        }
+      } finally {
+        inFlightRangeKeys.current.delete(rangeKey);
+        if (latestRequestedRange.current === rangeKey) {
+          setIsRangeLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  const handleDatesSet = useCallback(
+    (arg: DatesSetArg) => {
+      setCurrentTitle(arg.view.title);
+      setActiveView(arg.view.type as CalendarViewType);
+      void prefetchRange(arg.start, arg.end);
+    },
+    [prefetchRange]
+  );
 
   const handlePrev = useCallback(() => {
     calendarRef.current?.getApi().prev();
-    syncFromApi();
-  }, [syncFromApi]);
+  }, []);
 
   const handleNext = useCallback(() => {
     calendarRef.current?.getApi().next();
-    syncFromApi();
-  }, [syncFromApi]);
+  }, []);
 
   const handleToday = useCallback(() => {
     const api = calendarRef.current?.getApi();
     api?.today();
-    syncFromApi();
-  }, [syncFromApi]);
+  }, []);
 
   const handleViewChange = useCallback((view: CalendarViewType) => {
     const api = calendarRef.current?.getApi();
@@ -279,9 +339,9 @@ export function CalendarWorkspace() {
       return;
     }
 
+    setActiveView(view);
     api.changeView(view);
-    syncFromApi();
-  }, [syncFromApi]);
+  }, []);
 
   const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedTrimesterId(event.target.value);
@@ -306,8 +366,8 @@ export function CalendarWorkspace() {
   }, []);
 
   useEffect(() => {
-    void loadCalendarData();
-  }, [loadCalendarData]);
+    void loadStaticCollections();
+  }, [loadStaticCollections]);
 
   useEffect(() => {
     if (selectedTrimesterId === 'all') {
@@ -468,6 +528,8 @@ export function CalendarWorkspace() {
   ]);
 
   const hasAnyData = calendarData.lessons.length > 0 || calendarData.placeholders.length > 0;
+  const loadError = baseError ?? rangeError;
+  const isLoading = (isBaseLoading || isRangeLoading) && loadError === null;
 
   return (
     <section

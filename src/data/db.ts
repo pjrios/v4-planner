@@ -110,6 +110,22 @@ export const DataStore = {
   async getAll<K extends CollectionName>(collection: K) {
     return getTable(collection).toArray();
   },
+  async getInDateRange<K extends 'lessons' | 'placeholderSlots'>(
+    collection: K,
+    startDate: string,
+    endDate: string
+  ) {
+    if (!startDate || !endDate) {
+      return [] as CollectionEntityMap[K][];
+    }
+
+    const [start, end] = startDate <= endDate ? [startDate, endDate] : [endDate, startDate];
+
+    return getTable(collection)
+      .where('date')
+      .between(start, end, true, true)
+      .toArray() as Promise<CollectionEntityMap[K][]>;
+  },
   async update<K extends CollectionName>(collection: K, id: string, updates: Partial<CollectionEntityMap[K]>) {
     const table = getTable(collection);
     const current = await table.get(id);

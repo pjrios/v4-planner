@@ -66,6 +66,19 @@ export interface Schedule {
   sessions: ScheduleSession[];
 }
 
+export interface PlaceholderSlot {
+  id: Identifier;
+  scheduleId: Identifier;
+  groupId: Identifier;
+  trimesterId: Identifier;
+  date: string; // ISO Date (YYYY-MM-DD)
+  dayOfWeek: number; // 1 (Mon) - 7 (Sun)
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  durationMinutes: number;
+  source: 'schedule';
+}
+
 export interface Topic {
   id: Identifier;
   name: string;
@@ -77,7 +90,7 @@ export interface Topic {
 }
 
 export interface LessonPhase {
-  duration: number;
+  duration?: number;
   materials?: string[];
   preparation?: string;
   studentPrep?: string;
@@ -107,9 +120,19 @@ export interface Lesson {
   whileActivity?: LessonPhase;
   postActivity?: LessonPhase;
   resourceIds?: Identifier[];
+  resourceAttachments?: LessonResourceAttachment[];
   rubricId?: Identifier;
   linkedLessonIds?: Identifier[];
   completionNotes?: string;
+}
+
+export type LessonPhaseType = 'pre' | 'while' | 'post';
+
+export interface LessonResourceAttachment {
+  resourceId: Identifier;
+  usage: LessonPhaseType | 'all';
+  notes?: string;
+  required: boolean;
 }
 
 export interface RubricCriterion {
@@ -137,8 +160,6 @@ export interface Resource {
   attachedTo: 'lesson' | 'topic';
   attachedId: Identifier;
 }
-
-export type LessonPhaseType = 'pre' | 'while' | 'post';
 
 export interface ActivityTemplate {
   id: Identifier;

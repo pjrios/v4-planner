@@ -6,6 +6,14 @@ import * as React from 'react';
 import type { Group, Level, PlaceholderSlot, Schedule, Trimester } from '../../data/types';
 import { CalendarWorkspace } from './CalendarWorkspace';
 
+const changeHandlers = new Set<(changes: Array<{ table: string }>) => void>();
+
+const emitDexieChanges = (changes: Array<{ table: string }>) => {
+  for (const handler of changeHandlers) {
+    handler(changes);
+  }
+};
+
 const { gotoDateMock, getAllMock, getInDateRangeMock } = vi.hoisted(() => ({
   gotoDateMock: vi.fn(),
   getAllMock: vi.fn(),
@@ -122,7 +130,7 @@ const placeholderSlot: PlaceholderSlot = {
   startTime: '09:00',
   endTime: '10:00',
   durationMinutes: 60,
-  source: 'expected',
+  source: 'schedule',
 };
 
 vi.mock('../../data/db', () => ({
@@ -130,13 +138,31 @@ vi.mock('../../data/db', () => ({
     getAll: getAllMock,
     getInDateRange: getInDateRangeMock,
   },
+  db: {
+    on: Object.assign(() => undefined, {
+      changes: {
+        subscribe(handler: (changes: Array<{ table: string }>) => void) {
+          changeHandlers.add(handler);
+        },
+        unsubscribe(handler: (changes: Array<{ table: string }>) => void) {
+          changeHandlers.delete(handler);
+        },
+      },
+    }),
+  },
 }));
 
 describe('CalendarWorkspace schedule navigation', () => {
+  let scheduleState: { current: Schedule[] };
+  let placeholderState: { current: PlaceholderSlot[] };
+
   beforeEach(() => {
     gotoDateMock.mockClear();
     getAllMock.mockReset();
     getInDateRangeMock.mockReset();
+    scheduleState = { current: [schedule] as Schedule[] };
+    placeholderState = { current: [placeholderSlot] as PlaceholderSlot[] };
+
     getAllMock.mockImplementation(async (collection: string) => {
       switch (collection) {
         case 'trimesters':
@@ -148,7 +174,7 @@ describe('CalendarWorkspace schedule navigation', () => {
         case 'topics':
           return [];
         case 'schedules':
-          return [schedule];
+          return scheduleState.current;
         case 'holidays':
           return [];
         default:
@@ -161,9 +187,7 @@ describe('CalendarWorkspace schedule navigation', () => {
       }
 
       if (collection === 'placeholderSlots') {
-        return start <= placeholderSlot.date && placeholderSlot.date <= end
-          ? [placeholderSlot]
-          : [];
+        return placeholderState.current.filter((slot) => start <= slot.date && slot.date <= end);
       }
 
       return [];
@@ -173,6 +197,7 @@ describe('CalendarWorkspace schedule navigation', () => {
   afterEach(() => {
     getAllMock.mockReset();
     getInDateRangeMock.mockReset();
+    changeHandlers.clear();
   });
 
   it('navigates to the earliest future schedule and renders its placeholder slot', async () => {
@@ -202,5 +227,82 @@ describe('CalendarWorkspace schedule navigation', () => {
         );
       })
     ).toBe(true);
+  });
+
+  it('refreshes schedules and placeholders when Dexie change events fire', async () => {
+    render(<CalendarWorkspace />);
+
+    await screen.findByTestId(
+      `event-expected_placeholder_${schedule.id}_${firstSessionDate}_${schedule.sessions[0]!.startTime}_${schedule.sessions[0]!.endTime}`
+    );
+
+    const updatedSessionDayOfWeek = 5;
+    const updatedSessionOffset =
+      (updatedSessionDayOfWeek - getISODay(trimesterStartDateObj) + 7) % 7;
+    const updatedFirstSessionDateObj = addDays(trimesterStartDateObj, updatedSessionOffset);
+    const updatedFirstSessionDate = format(updatedFirstSessionDateObj, 'yyyy-MM-dd');
+
+    const updatedSchedule: Schedule = {
+      ...schedule,
+      sessions: [
+        {
+          dayOfWeek: updatedSessionDayOfWeek,
+          startTime: '13:00',
+          endTime: '14:30',
+        },
+      ],
+    };
+
+    const updatedPlaceholder: PlaceholderSlot = {
+      ...placeholderSlot,
+      date: updatedFirstSessionDate,
+      startTime: '13:00',
+      endTime: '14:30',
+      dayOfWeek: updatedSessionDayOfWeek,
+      durationMinutes: 90,
+      id: `placeholder_${updatedSchedule.id}_${updatedFirstSessionDate}_13:00_14:30`,
+      source: 'schedule',
+    };
+
+    scheduleState.current = [updatedSchedule];
+    placeholderState.current = [updatedPlaceholder];
+
+    const initialScheduleFetches = getAllMock.mock.calls.filter((call) => call[0] === 'schedules').length;
+    const initialPlaceholderFetches = getInDateRangeMock.mock.calls.filter(
+      (call) => call[0] === 'placeholderSlots'
+    ).length;
+
+    emitDexieChanges([
+      { table: 'schedules' },
+      { table: 'placeholderSlots' },
+    ]);
+
+    await waitFor(() => {
+      expect(
+        getAllMock.mock.calls.filter((call) => call[0] === 'schedules').length
+      ).toBeGreaterThan(initialScheduleFetches);
+    });
+
+    await waitFor(() => {
+      expect(
+        getInDateRangeMock.mock.calls.filter((call) => call[0] === 'placeholderSlots').length
+      ).toBeGreaterThan(initialPlaceholderFetches);
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(
+          `event-placeholder_${updatedSchedule.id}_${updatedFirstSessionDate}_13:00_14:30`
+        )
+      ).toBeInTheDocument();
+    });
+
+    const placeholderEventIds = screen
+      .getAllByTestId(/^event-placeholder_/)
+      .map((element) => element.getAttribute('data-testid'));
+
+    expect(placeholderEventIds).toContain(
+      `event-placeholder_${updatedSchedule.id}_${updatedFirstSessionDate}_13:00_14:30`
+    );
   });
 });

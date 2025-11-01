@@ -13,7 +13,7 @@ import type {
   MoreLinkContentArg,
 } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
-import { DataStore } from '../../data/db';
+import { DataStore, db } from '../../data/db';
 import { getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
@@ -360,13 +360,13 @@ function createPlaceholderEvents(
     const group = groupsById.get(slot.groupId);
     const level = group ? levelsById.get(group.levelId) : undefined;
     const accent = level?.color ?? DEFAULT_ACCENT;
-    const isExpected = slot.source === 'expected';
-    const placeholderLabel = isExpected ? 'Scheduled session' : 'Placeholder slot';
-    const background = hexToRgba(accent, isExpected ? 0.18 : 0.24);
-    const border = hexToRgba(accent, isExpected ? 0.45 : 0.55);
+    const isScheduled = slot.source === 'expected' || slot.source === 'schedule';
+    const placeholderLabel = isScheduled ? 'Scheduled session' : 'Placeholder slot';
+    const background = hexToRgba(accent, isScheduled ? 0.18 : 0.24);
+    const border = hexToRgba(accent, isScheduled ? 0.45 : 0.55);
     const classNames = [
       'placeholder-event',
-      isExpected ? 'placeholder-event-expected' : 'placeholder-event-saved',
+      isScheduled ? 'placeholder-event-expected' : 'placeholder-event-saved',
     ];
 
     result.push({
@@ -420,7 +420,8 @@ export function CalendarWorkspace() {
   const [baseError, setBaseError] = useState<string | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
-  const latestRequestedRange = useRef<string | null>(null);
+  const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
+  const nextRangeRequestToken = useRef(0);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
@@ -482,20 +483,22 @@ export function CalendarWorkspace() {
       const paddedEnd = format(addDays(inclusiveEnd, RANGE_PADDING_DAYS), ISO_DATE_FORMAT);
       const rangeKey = `${paddedStart}_${paddedEnd}`;
 
+      const requestToken = ++nextRangeRequestToken.current;
+      const descriptor = { key: rangeKey, token: requestToken };
+
       const previous = lastPrefetchedRange.current;
       if (previous && paddedStart >= previous.start && paddedEnd <= previous.end) {
-        latestRequestedRange.current = rangeKey;
+        latestRequestedRange.current = descriptor;
         setRangeError(null);
         setIsRangeLoading(false);
         return;
       }
 
       if (inFlightRangeKeys.current.has(rangeKey)) {
-        latestRequestedRange.current = rangeKey;
         return;
       }
 
-      latestRequestedRange.current = rangeKey;
+      latestRequestedRange.current = descriptor;
       inFlightRangeKeys.current.add(rangeKey);
       setIsRangeLoading(true);
       setRangeError(null);
@@ -506,7 +509,10 @@ export function CalendarWorkspace() {
           DataStore.getInDateRange('placeholderSlots', paddedStart, paddedEnd),
         ]);
 
-        if (latestRequestedRange.current === rangeKey) {
+        if (
+          latestRequestedRange.current?.key === rangeKey &&
+          latestRequestedRange.current?.token === requestToken
+        ) {
           setCalendarData((current) => ({
             ...current,
             lessons,
@@ -516,7 +522,10 @@ export function CalendarWorkspace() {
           setRangeError(null);
         }
       } catch (error) {
-        if (latestRequestedRange.current === rangeKey) {
+        if (
+          latestRequestedRange.current?.key === rangeKey &&
+          latestRequestedRange.current?.token === requestToken
+        ) {
           console.error('Failed to load calendar events for range', error);
           setRangeError('Unable to load calendar events for the selected range. Please try again.');
           setCalendarData((current) => ({
@@ -527,7 +536,10 @@ export function CalendarWorkspace() {
         }
       } finally {
         inFlightRangeKeys.current.delete(rangeKey);
-        if (latestRequestedRange.current === rangeKey) {
+        if (
+          latestRequestedRange.current?.key === rangeKey &&
+          latestRequestedRange.current?.token === requestToken
+        ) {
           setIsRangeLoading(false);
         }
       }
@@ -610,6 +622,72 @@ export function CalendarWorkspace() {
   useEffect(() => {
     void loadStaticCollections();
   }, [loadStaticCollections]);
+
+  useEffect(() => {
+    const handler = (changes: Array<{ table: string | undefined }>) => {
+      let shouldReloadStatic = false;
+      let shouldRefreshRange = false;
+
+      for (const change of changes) {
+        switch (change.table) {
+          case 'trimesters':
+          case 'groups':
+          case 'levels':
+          case 'topics':
+          case 'schedules':
+          case 'holidays':
+            shouldReloadStatic = true;
+            break;
+          case 'placeholderSlots':
+          case 'lessons':
+            shouldRefreshRange = true;
+            break;
+          default:
+            break;
+        }
+      }
+
+      if (shouldReloadStatic) {
+        void loadStaticCollections();
+      }
+
+      if (shouldRefreshRange) {
+        lastPrefetchedRange.current = null;
+        latestRequestedRange.current = null;
+        const range = currentVisibleRange.current;
+        if (range) {
+          void prefetchRange(range.start, range.end);
+        }
+      }
+    };
+
+    const changeEventSource = (db.on as unknown as {
+      changes?: {
+        subscribe?: (listener: typeof handler) => void;
+        unsubscribe?: (listener: typeof handler) => void;
+      };
+    }).changes;
+
+    if (changeEventSource?.subscribe) {
+      changeEventSource.subscribe(handler);
+      return () => {
+        changeEventSource.unsubscribe?.(handler);
+      };
+    }
+
+    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
+      changes?: { unsubscribe?: (listener: typeof handler) => void };
+    };
+
+    if (typeof directOn === 'function') {
+      directOn('changes', handler);
+      return () => {
+        directOn.changes?.unsubscribe?.(handler);
+      };
+    }
+
+    return () => undefined;
+  }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {
     if (selectedTrimesterId === 'all') {
@@ -707,14 +785,37 @@ export function CalendarWorkspace() {
 
   const availablePlaceholders = useMemo(() => {
     const combined = new Map<string, PlaceholderSlot>();
+    const schedulePatterns = new Map<string, Set<string>>();
 
     for (const slot of expectedScheduleSlots) {
       const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
       combined.set(key, slot);
     }
 
+    for (const schedule of calendarData.schedules) {
+      if (!schedule) continue;
+      const patterns = new Set<string>();
+      for (const session of schedule.sessions ?? []) {
+        if (!session) continue;
+        const pattern = `${session.dayOfWeek}_${session.startTime}_${session.endTime}`;
+        patterns.add(pattern);
+      }
+      schedulePatterns.set(schedule.id, patterns);
+    }
+
     for (const slot of calendarData.placeholders) {
       const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      const isScheduleDerived = slot.source === 'schedule' || slot.source === 'expected';
+
+      if (isScheduleDerived && schedulePatterns.size > 0) {
+        const patterns = schedulePatterns.get(slot.scheduleId);
+        const patternKey = `${slot.dayOfWeek}_${slot.startTime}_${slot.endTime}`;
+
+        if (!patterns || !patterns.has(patternKey)) {
+          continue;
+        }
+      }
+
       combined.set(key, slot);
     }
 

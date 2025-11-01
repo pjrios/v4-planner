@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { CalendarClock, CopyCheck, GraduationCap, LayoutDashboard, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
@@ -91,6 +91,22 @@ const highlights = [
 
 export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('overview');
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ workspace?: WorkspaceId }>).detail;
+      if (!detail?.workspace) {
+        return;
+      }
+
+      setActiveWorkspace(detail.workspace);
+    };
+
+    window.addEventListener('planner:navigate', handler as EventListener);
+    return () => {
+      window.removeEventListener('planner:navigate', handler as EventListener);
+    };
+  }, []);
 
   const workspaceConfig = useMemo(
     () => ({

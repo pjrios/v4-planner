@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -14,6 +14,7 @@ import type {
   Level,
   PlaceholderSlot,
   Topic,
+  Trimester,
 } from '../../data/types';
 
 type CalendarViewType = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
@@ -32,6 +33,23 @@ const STATUS_THEME: Record<LessonStatus, { backgroundAlpha: number; borderAlpha:
   in_progress: { backgroundAlpha: 0.28, borderAlpha: 0.65, textColor: '#0f172a' },
   completed: { backgroundAlpha: 0.35, borderAlpha: 0.75, textColor: '#0f172a' },
   cancelled: { backgroundAlpha: 0.16, borderAlpha: 0.4, textColor: '#f8fafc' },
+};
+
+const LESSON_STATUS_OPTIONS: { id: LessonStatus; label: string }[] = [
+  { id: 'draft', label: 'Draft' },
+  { id: 'planned', label: 'Planned' },
+  { id: 'in_progress', label: 'In progress' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'cancelled', label: 'Cancelled' },
+];
+
+type CalendarDataState = {
+  trimesters: Trimester[];
+  levels: Level[];
+  groups: Group[];
+  lessons: Lesson[];
+  placeholders: PlaceholderSlot[];
+  topics: Topic[];
 };
 
 function toDateTime(date: string, time: string) {
@@ -169,7 +187,20 @@ export function CalendarWorkspace() {
   const calendarRef = useRef<FullCalendarClass | null>(null);
   const [currentTitle, setCurrentTitle] = useState('');
   const [activeView, setActiveView] = useState<CalendarViewType>('dayGridMonth');
-  const [events, setEvents] = useState<EventInput[]>([]);
+  const [calendarData, setCalendarData] = useState<CalendarDataState>({
+    trimesters: [],
+    levels: [],
+    groups: [],
+    lessons: [],
+    placeholders: [],
+    topics: [],
+  });
+  const [selectedTrimesterId, setSelectedTrimesterId] = useState<string>('all');
+  const [selectedLevelId, setSelectedLevelId] = useState<string>('all');
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
+  const [selectedStatuses, setSelectedStatuses] = useState<LessonStatus[]>(() =>
+    LESSON_STATUS_OPTIONS.map((option) => option.id)
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -178,7 +209,8 @@ export function CalendarWorkspace() {
     setLoadError(null);
 
     try {
-      const [groups, levels, lessons, placeholders, topics] = await Promise.all([
+      const [trimesters, groups, levels, lessons, placeholders, topics] = await Promise.all([
+        DataStore.getAll('trimesters'),
         DataStore.getAll('groups'),
         DataStore.getAll('levels'),
         DataStore.getAll('lessons'),
@@ -186,29 +218,25 @@ export function CalendarWorkspace() {
         DataStore.getAll('topics'),
       ]);
 
-      const groupsById = new Map(groups.map((group) => [group.id, group]));
-      const levelsById = new Map(levels.map((level) => [level.id, level]));
-      const topicsById = new Map(topics.map((topic) => [topic.id, topic]));
-
-      const { events: lessonEvents, lessonKeys } = createLessonEvents(
+      setCalendarData({
+        trimesters,
+        groups,
+        levels,
         lessons,
-        groupsById,
-        levelsById,
-        topicsById
-      );
-
-      const placeholderEvents = createPlaceholderEvents(
         placeholders,
-        groupsById,
-        levelsById,
-        lessonKeys
-      );
-
-      setEvents([...lessonEvents, ...placeholderEvents]);
+        topics,
+      });
     } catch (error) {
       console.error('Failed to load calendar events', error);
       setLoadError('Unable to load calendar data. Please try again.');
-      setEvents([]);
+      setCalendarData({
+        trimesters: [],
+        groups: [],
+        levels: [],
+        lessons: [],
+        placeholders: [],
+        topics: [],
+      });
     } finally {
       setIsLoading(false);
     }
@@ -255,9 +283,191 @@ export function CalendarWorkspace() {
     syncFromApi();
   }, [syncFromApi]);
 
+  const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    setSelectedTrimesterId(event.target.value);
+  }, []);
+
+  const handleLevelChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    setSelectedLevelId(event.target.value);
+  }, []);
+
+  const handleGroupChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    setSelectedGroupId(event.target.value);
+  }, []);
+
+  const handleStatusToggle = useCallback((status: LessonStatus) => {
+    setSelectedStatuses((current) => {
+      if (current.includes(status)) {
+        return current.filter((item) => item !== status);
+      }
+
+      return [...current, status];
+    });
+  }, []);
+
   useEffect(() => {
     void loadCalendarData();
   }, [loadCalendarData]);
+
+  useEffect(() => {
+    if (selectedTrimesterId === 'all') {
+      return;
+    }
+
+    const exists = calendarData.trimesters.some((trimester) => trimester.id === selectedTrimesterId);
+    if (!exists) {
+      setSelectedTrimesterId('all');
+    }
+  }, [calendarData.trimesters, selectedTrimesterId]);
+
+  useEffect(() => {
+    if (selectedLevelId === 'all') {
+      return;
+    }
+
+    const exists = calendarData.levels.some((level) => level.id === selectedLevelId);
+    if (!exists) {
+      setSelectedLevelId('all');
+    }
+  }, [calendarData.levels, selectedLevelId]);
+
+  useEffect(() => {
+    if (selectedGroupId === 'all') {
+      return;
+    }
+
+    const group = calendarData.groups.find((item) => item.id === selectedGroupId);
+    if (!group) {
+      setSelectedGroupId('all');
+      return;
+    }
+
+    if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+      setSelectedGroupId('all');
+    }
+  }, [calendarData.groups, selectedGroupId, selectedLevelId]);
+
+  const trimesterOptions = useMemo(
+    () => [
+      { id: 'all', label: 'All trimesters' },
+      ...calendarData.trimesters.map((trimester) => ({
+        id: trimester.id,
+        label: trimester.name,
+      })),
+    ],
+    [calendarData.trimesters]
+  );
+
+  const levelOptions = useMemo(
+    () => [
+      { id: 'all', label: 'All levels' },
+      ...calendarData.levels.map((level) => ({
+        id: level.id,
+        label: `Grade ${level.gradeNumber} • ${level.subject}`,
+      })),
+    ],
+    [calendarData.levels]
+  );
+
+  const groupOptions = useMemo(() => {
+    const groupsForLevel =
+      selectedLevelId === 'all'
+        ? calendarData.groups
+        : calendarData.groups.filter((group) => group.levelId === selectedLevelId);
+
+    return [
+      { id: 'all', label: selectedLevelId === 'all' ? 'All groups' : 'All groups in level' },
+      ...groupsForLevel.map((group) => ({ id: group.id, label: group.displayName })),
+    ];
+  }, [calendarData.groups, selectedLevelId]);
+
+  const filteredEvents = useMemo<EventInput[]>(() => {
+    const groupsById = new Map(calendarData.groups.map((group) => [group.id, group]));
+    const levelsById = new Map(calendarData.levels.map((level) => [level.id, level]));
+    const topicsById = new Map(calendarData.topics.map((topic) => [topic.id, topic]));
+    const activeStatuses = new Set(selectedStatuses);
+
+    const lessonsMatchingFilters = calendarData.lessons.filter((lesson) => {
+      if (selectedTrimesterId !== 'all' && lesson.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && lesson.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(lesson.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      if (activeStatuses.size > 0 && !activeStatuses.has(lesson.status)) {
+        return false;
+      }
+
+      return true;
+    });
+
+    const { events: lessonEvents } = createLessonEvents(
+      lessonsMatchingFilters,
+      groupsById,
+      levelsById,
+      topicsById
+    );
+
+    const { lessonKeys } = createLessonEvents(
+      calendarData.lessons,
+      groupsById,
+      levelsById,
+      topicsById
+    );
+
+    const placeholdersMatchingFilters = calendarData.placeholders.filter((slot) => {
+      if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && slot.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      return true;
+    });
+
+    const placeholderEvents = createPlaceholderEvents(
+      placeholdersMatchingFilters,
+      groupsById,
+      levelsById,
+      lessonKeys
+    );
+
+    return [...lessonEvents, ...placeholderEvents];
+  }, [
+    calendarData.groups,
+    calendarData.levels,
+    calendarData.lessons,
+    calendarData.placeholders,
+    calendarData.topics,
+    selectedGroupId,
+    selectedLevelId,
+    selectedStatuses,
+    selectedTrimesterId,
+  ]);
+
+  const hasAnyData = calendarData.lessons.length > 0 || calendarData.placeholders.length > 0;
 
   return (
     <section
@@ -329,6 +539,77 @@ export function CalendarWorkspace() {
           </div>
         </div>
       </header>
+      <div className="rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <span>Trimester</span>
+            <select
+              value={selectedTrimesterId}
+              onChange={handleTrimesterChange}
+              className="rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+            >
+              {trimesterOptions.map((option) => (
+                <option key={option.id} value={option.id} className="bg-slate-900 text-slate-100">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <span>Level</span>
+            <select
+              value={selectedLevelId}
+              onChange={handleLevelChange}
+              className="rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+            >
+              {levelOptions.map((option) => (
+                <option key={option.id} value={option.id} className="bg-slate-900 text-slate-100">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <span>Group</span>
+            <select
+              value={selectedGroupId}
+              onChange={handleGroupChange}
+              className="rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+            >
+              {groupOptions.map((option) => (
+                <option key={option.id} value={option.id} className="bg-slate-900 text-slate-100">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+              Lesson status
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {LESSON_STATUS_OPTIONS.map((option) => {
+                const isActive = selectedStatuses.includes(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleStatusToggle(option.id)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                      isActive
+                        ? 'bg-accent/20 text-accent shadow-[0_0_0_1px_rgba(99,102,241,0.45)]'
+                        : 'border border-white/10 bg-white/5 text-slate-200 hover:border-white/20 hover:text-white'
+                    }`}
+                    aria-pressed={isActive}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        </div>
+      </div>
       {isLoading ? (
         <p className="rounded-2xl bg-surface/60 p-4 text-sm text-slate-300 ring-1 ring-white/10">
           Loading calendar events…
@@ -337,9 +618,11 @@ export function CalendarWorkspace() {
         <p className="rounded-2xl bg-rose-500/10 p-4 text-sm text-rose-200 ring-1 ring-rose-500/40">
           {loadError}
         </p>
-      ) : events.length === 0 ? (
+      ) : filteredEvents.length === 0 ? (
         <p className="rounded-2xl bg-surface/60 p-4 text-sm text-slate-400 ring-1 ring-white/10">
-          No calendar events to show yet. Configure schedules or lessons to populate this view.
+          {hasAnyData
+            ? 'No calendar events match the current filters.'
+            : 'No calendar events to show yet. Configure schedules or lessons to populate this view.'}
         </p>
       ) : null}
       <div className="rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
@@ -358,7 +641,7 @@ export function CalendarWorkspace() {
           slotMinTime="07:00:00"
           slotMaxTime="18:00:00"
           datesSet={handleDatesSet}
-          events={events}
+          events={filteredEvents}
           eventDisplay="block"
         />
       </div>

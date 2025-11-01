@@ -74,8 +74,13 @@ a {
   font-weight: 600;
 }
 
-.fc .fc-timegrid-event.placeholder-event {
+.fc .fc-timegrid-event.placeholder-event-expected {
   border-style: dashed;
+  font-weight: 500;
+}
+
+.fc .fc-timegrid-event.placeholder-event-saved {
+  border-style: solid;
   font-weight: 500;
 }
 
@@ -117,6 +122,14 @@ a {
   box-sizing: border-box;
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.22);
   transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.fc .fc-month-chip-placeholder-expected {
+  border-style: dashed;
+}
+
+.fc .fc-month-chip-placeholder-saved {
+  border-style: solid;
 }
 
 .fc .fc-month-chip:hover {

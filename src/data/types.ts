@@ -76,7 +76,7 @@ export interface PlaceholderSlot {
   startTime: string; // HH:mm
   endTime: string; // HH:mm
   durationMinutes: number;
-  source: 'schedule';
+  source: 'schedule' | 'expected';
 }
 
 export interface Topic {

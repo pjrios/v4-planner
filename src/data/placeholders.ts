@@ -211,7 +211,11 @@ export function getExpectedSlotsForRange(
       }
 
       if (occurrence >= startBound && occurrence <= inclusiveEnd) {
-        results.push(slot);
+        results.push({
+          ...slot,
+          id: `expected_${slot.id}`,
+          source: 'expected',
+        });
       }
     }
   }

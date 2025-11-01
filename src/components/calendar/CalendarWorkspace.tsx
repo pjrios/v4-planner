@@ -238,16 +238,24 @@ function createPlaceholderEvents(
     const group = groupsById.get(slot.groupId);
     const level = group ? levelsById.get(group.levelId) : undefined;
     const accent = level?.color ?? DEFAULT_ACCENT;
+    const isExpected = slot.source === 'expected';
+    const placeholderLabel = isExpected ? 'Scheduled session' : 'Placeholder slot';
+    const background = hexToRgba(accent, isExpected ? 0.08 : 0.12);
+    const border = hexToRgba(accent, isExpected ? 0.24 : 0.35);
+    const classNames = [
+      'placeholder-event',
+      isExpected ? 'placeholder-event-expected' : 'placeholder-event-saved',
+    ];
 
     result.push({
       id: slot.id,
-      title: `${group?.displayName ?? 'Group'} • Scheduled slot`,
+      title: `${group?.displayName ?? 'Group'} • ${placeholderLabel}`,
       start: toDateTime(slot.date, slot.startTime),
       end: toDateTime(slot.date, slot.endTime),
       display: 'block',
-      classNames: ['placeholder-event'],
-      backgroundColor: hexToRgba(accent, 0.12),
-      borderColor: hexToRgba(accent, 0.35),
+      classNames,
+      backgroundColor: background,
+      borderColor: border,
       textColor: '#cbd5f5',
       extendedProps: {
         kind: 'placeholder',
@@ -256,6 +264,8 @@ function createPlaceholderEvents(
         accentColor: accent,
         startTime: slot.startTime,
         endTime: slot.endTime,
+        placeholderSource: slot.source,
+        placeholderLabel,
       },
     });
   }
@@ -523,12 +533,12 @@ export function CalendarWorkspace() {
     lastAutoFocusedDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
-  const availablePlaceholders = useMemo(() => {
+  const expectedScheduleSlots = useMemo(() => {
     if (!visibleRange) {
-      return calendarData.placeholders;
+      return [] as PlaceholderSlot[];
     }
 
-    const expectedSlots = getExpectedSlotsForRange(
+    return getExpectedSlotsForRange(
       calendarData.schedules,
       calendarData.trimesters,
       calendarData.groups,
@@ -536,35 +546,43 @@ export function CalendarWorkspace() {
       visibleRange.start,
       visibleRange.end
     );
-
-    if (!expectedSlots.length) {
-      return calendarData.placeholders;
-    }
-
-    const byKey = new Map(
-      calendarData.placeholders.map((slot) => [
-        `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`,
-        slot,
-      ])
-    );
-
-    const merged = [...calendarData.placeholders];
-    for (const slot of expectedSlots) {
-      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
-      if (!byKey.has(key)) {
-        merged.push(slot);
-      }
-    }
-
-    return merged;
   }, [
     calendarData.groups,
     calendarData.holidays,
-    calendarData.placeholders,
     calendarData.schedules,
     calendarData.trimesters,
     visibleRange,
   ]);
+
+  const availablePlaceholders = useMemo(() => {
+    if (!visibleRange) {
+      return calendarData.placeholders;
+    }
+
+    const combined = new Map<string, PlaceholderSlot>();
+
+    for (const slot of expectedScheduleSlots) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      combined.set(key, slot);
+    }
+
+    for (const slot of calendarData.placeholders) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      combined.set(key, slot);
+    }
+
+    return Array.from(combined.values()).sort((a, b) => {
+      if (a.date !== b.date) {
+        return a.date.localeCompare(b.date);
+      }
+
+      if (a.startTime !== b.startTime) {
+        return a.startTime.localeCompare(b.startTime);
+      }
+
+      return a.groupId.localeCompare(b.groupId);
+    });
+  }, [calendarData.placeholders, expectedScheduleSlots, visibleRange]);
 
   const lessons = calendarData.lessons;
 
@@ -853,11 +871,16 @@ export function CalendarWorkspace() {
 
       const { event } = arg;
       const kind = (event.extendedProps.kind as string | undefined) ?? 'lesson';
-      const statusLabel = event.extendedProps.statusLabel as string | undefined;
+      const lessonStatusLabel = event.extendedProps.statusLabel as string | undefined;
       const groupName = event.extendedProps.groupName as string | undefined;
       const topicName = event.extendedProps.topicName as string | undefined;
       const startTime = event.extendedProps.startTime as string | undefined;
       const endTime = event.extendedProps.endTime as string | undefined;
+      const placeholderLabel = event.extendedProps.placeholderLabel as string | undefined;
+      const placeholderSource = event.extendedProps.placeholderSource as
+        | 'expected'
+        | 'schedule'
+        | undefined;
       const timeLabel = formatTimeRange(startTime, endTime);
       const accentColor =
         (event.extendedProps.accentColor as string | undefined) ?? event.backgroundColor ?? DEFAULT_ACCENT;
@@ -865,14 +888,16 @@ export function CalendarWorkspace() {
       const label =
         kind === 'lesson'
           ? `${groupName ?? 'Lesson'}${topicName ? ` • ${topicName}` : ''}`
-          : `${groupName ?? 'Group'} • Slot`;
+          : `${groupName ?? 'Group'} • ${placeholderLabel ?? 'Slot'}`;
 
       const tooltipParts = [label];
       if (timeLabel) {
         tooltipParts.push(timeLabel);
       }
-      if (kind === 'lesson' && statusLabel) {
-        tooltipParts.push(statusLabel);
+      if (kind === 'lesson' && lessonStatusLabel) {
+        tooltipParts.push(lessonStatusLabel);
+      } else if (kind === 'placeholder' && placeholderLabel) {
+        tooltipParts.push(placeholderLabel);
       }
 
       const tooltip = tooltipParts.join(' • ');
@@ -884,11 +909,27 @@ export function CalendarWorkspace() {
       const labelHtml = `<span class="fc-month-chip-label">${escapeHtml(label)}</span>`;
       const timeHtml = timeLabel ? `<span class="fc-month-chip-time">${escapeHtml(timeLabel)}</span>` : '';
       const statusHtml =
-        kind === 'lesson' && statusLabel
-          ? `<span class="fc-month-chip-status">${escapeHtml(statusLabel)}</span>`
-          : '';
+        kind === 'lesson'
+          ? lessonStatusLabel
+            ? `<span class="fc-month-chip-status">${escapeHtml(lessonStatusLabel)}</span>`
+            : ''
+          : placeholderLabel
+            ? `<span class="fc-month-chip-status">${escapeHtml(placeholderLabel)}</span>`
+            : '';
 
-      const html = `<div class="fc-month-chip ${kind === 'lesson' ? 'fc-month-chip-lesson' : 'fc-month-chip-placeholder'}" style="background:${backgroundColor};border-color:${borderColor};color:${textColor};" title="${escapeHtml(tooltip)}">${indicatorHtml}${labelHtml}${timeHtml}${statusHtml}</div>`;
+      const chipClasses = ['fc-month-chip'];
+      if (kind === 'lesson') {
+        chipClasses.push('fc-month-chip-lesson');
+      } else {
+        chipClasses.push('fc-month-chip-placeholder');
+        chipClasses.push(
+          placeholderSource === 'expected'
+            ? 'fc-month-chip-placeholder-expected'
+            : 'fc-month-chip-placeholder-saved'
+        );
+      }
+
+      const html = `<div class="${chipClasses.join(' ')}" style="background:${backgroundColor};border-color:${borderColor};color:${textColor};" title="${escapeHtml(tooltip)}">${indicatorHtml}${labelHtml}${timeHtml}${statusHtml}</div>`;
 
       return { html };
     },
@@ -917,7 +958,12 @@ export function CalendarWorkspace() {
       const kind: 'lesson' | 'placeholder' = rawKind === 'placeholder' ? 'placeholder' : 'lesson';
       const groupName = (event.extendedProps.groupName as string | undefined) ?? 'Unknown group';
       const topicName = event.extendedProps.topicName as string | undefined;
-      const statusLabel = (event.extendedProps.statusLabel as string | undefined) ?? null;
+      const lessonStatusLabel = (event.extendedProps.statusLabel as string | undefined) ?? null;
+      const placeholderLabel = event.extendedProps.placeholderLabel as string | undefined;
+      const placeholderSource = event.extendedProps.placeholderSource as
+        | 'expected'
+        | 'schedule'
+        | undefined;
       const startTime = event.extendedProps.startTime as string | undefined;
       const endTime = event.extendedProps.endTime as string | undefined;
       const timeLabel = formatTimeRange(startTime, endTime);
@@ -929,8 +975,12 @@ export function CalendarWorkspace() {
       const title =
         kind === 'lesson'
           ? topicName ?? 'Untitled lesson'
-          : 'Available placeholder';
-      const subtitle = kind === 'lesson' ? groupName : `${groupName} • Slot`;
+          : placeholderLabel ?? (placeholderSource === 'expected' ? 'Scheduled session' : 'Placeholder slot');
+      const subtitle = kind === 'lesson' ? groupName : groupName;
+      const computedStatusLabel =
+        kind === 'lesson'
+          ? lessonStatusLabel
+          : placeholderLabel ?? (placeholderSource === 'expected' ? 'Scheduled session' : null);
 
       const fallbackParts = [title];
       if (subtitle) {
@@ -939,8 +989,8 @@ export function CalendarWorkspace() {
       if (timeLabel) {
         fallbackParts.push(timeLabel);
       }
-      if (kind === 'lesson' && statusLabel) {
-        fallbackParts.push(statusLabel);
+      if (computedStatusLabel && computedStatusLabel !== title && computedStatusLabel !== subtitle) {
+        fallbackParts.push(computedStatusLabel);
       }
       el.setAttribute('title', fallbackParts.join(' • '));
 
@@ -987,7 +1037,7 @@ export function CalendarWorkspace() {
           title,
           subtitle,
           timeLabel: timeLabel || null,
-          statusLabel: kind === 'lesson' ? statusLabel : null,
+          statusLabel: computedStatusLabel,
           accentColor,
           top: referenceTop,
           left: centerX,

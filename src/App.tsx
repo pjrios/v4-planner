@@ -1,5 +1,6 @@
+import { useMemo, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { CalendarClock, CopyCheck, GraduationCap, Layers3, Sparkles } from 'lucide-react';
+import { CalendarClock, CopyCheck, GraduationCap, LayoutDashboard, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
 import { TrimesterManager } from './components/trimester';
@@ -10,17 +11,24 @@ import { ScheduleBuilder } from './components/schedule';
 import { CalendarWorkspace } from './components/calendar';
 import { LessonWorkspace } from './components/lesson';
 
+type WorkspaceId = 'overview' | 'calendar' | 'lessons' | 'structure' | 'reports' | 'settings';
+
 const planningSections: SidebarSection[] = [
   {
     id: 'planning',
     label: 'Planning',
     items: [
       {
+        id: 'overview',
+        label: 'Overview',
+        description: 'Highlights and daily focus',
+        icon: LayoutDashboard,
+      },
+      {
         id: 'calendar',
         label: 'Calendar',
         description: 'Month, week, and day views',
         icon: CalendarClock,
-        isActive: true,
       },
       {
         id: 'lessons',
@@ -82,149 +90,244 @@ const highlights = [
 ];
 
 export default function App() {
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('overview');
+
+  const workspaceConfig = useMemo(
+    () => ({
+      overview: {
+        title: 'Agenda overview',
+        subtitle: 'Offline-first workspace for planning, scheduling, and tracking every class.',
+      },
+      calendar: {
+        title: 'Calendar workspace',
+        subtitle: 'Switch between month, week, and day views while tracking lessons and placeholders.',
+      },
+      lessons: {
+        title: 'Lesson workspace',
+        subtitle: 'Draft, review, and coordinate structured lessons across every teaching level.',
+      },
+      structure: {
+        title: 'Structure workspace',
+        subtitle: 'Manage trimesters, levels, groups, schedules, and holidays in one place.',
+      },
+      reports: {
+        title: 'Reports overview',
+        subtitle: 'Track coverage, pacing, and workload insights (coming soon).',
+      },
+      settings: {
+        title: 'Workspace settings',
+        subtitle: 'Configure preferences, backups, and planner defaults (coming soon).',
+      },
+    }),
+    []
+  );
+
+  const workspaceBreadcrumbLabel: Record<WorkspaceId, string> = {
+    overview: 'Overview',
+    calendar: 'Calendar',
+    lessons: 'Lessons',
+    structure: 'Structure',
+    reports: 'Reports',
+    settings: 'Settings',
+  };
+
+  const topBarContent = workspaceConfig[activeWorkspace];
+
+  const renderWorkspace = () => {
+    switch (activeWorkspace) {
+      case 'calendar':
+        return (
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
+            <CalendarWorkspace />
+          </div>
+        );
+      case 'lessons':
+        return (
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
+            <LessonWorkspace />
+          </div>
+        );
+      case 'structure':
+        return (
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
+            <TrimesterManager />
+            <LevelManager />
+            <GroupManager />
+            <ScheduleBuilder />
+            <HolidayManager />
+          </div>
+        );
+      case 'reports':
+      case 'settings':
+        return (
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-16 text-center">
+            <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-10">
+              <h2 className="text-2xl font-semibold text-white">Coming soon</h2>
+              <p className="mt-3 text-sm text-slate-400">
+                We&apos;re still sketching the workflows for this section. Continue planning from the overview while the
+                remaining tools take shape.
+              </p>
+            </div>
+          </div>
+        );
+      case 'overview':
+      default:
+        return (
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-10">
+            <OverviewSection />
+          </div>
+        );
+    }
+  };
+
   return (
     <AppShell
-      sidebar={<Sidebar sections={planningSections} />}
+      sidebar={
+        <Sidebar
+          sections={planningSections}
+          activeItemId={activeWorkspace}
+          onSelectItem={(itemId) => setActiveWorkspace(itemId as WorkspaceId)}
+        />
+      }
       topBar={
         <TopBar
-          title="Agenda overview"
-          subtitle="Offline-first workspace for planning, scheduling, and tracking every class."
-          breadcrumbs={[{ id: 'home', label: 'Home' }, { id: 'overview', label: 'Overview' }]}
+          title={topBarContent.title}
+          subtitle={topBarContent.subtitle}
+          breadcrumbs={[
+            { id: 'home', label: 'Home' },
+            { id: activeWorkspace, label: workspaceBreadcrumbLabel[activeWorkspace] },
+          ]}
         />
       }
     >
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-10">
-        <section aria-labelledby="daily-focus-heading" className="grid gap-6 md:grid-cols-3">
-          <h2 id="daily-focus-heading" className="sr-only">
-            Daily focus
-          </h2>
-          {dailyFocus.map((item, index) => {
-            const Icon = item.icon;
-            const titleId = `daily-focus-title-${index}`;
-            const descriptionId = `daily-focus-description-${index}`;
-            return (
-              <article
-                key={item.title}
-                className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-6 text-slate-200 shadow-lg shadow-slate-950/30"
-                aria-labelledby={titleId}
-                aria-describedby={descriptionId}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-                    <Icon className="h-5 w-5" aria-hidden />
-                  </span>
-                  <h3 id={titleId} className="text-base font-semibold text-white">
-                    {item.title}
-                  </h3>
-                </div>
-                <p id={descriptionId} className="text-sm text-slate-400">
-                  {item.description}
-                </p>
-                <ul className="flex flex-wrap gap-2" aria-label="Status tags">
-                  {item.actions.map((action) => (
-                    <li key={action}>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200">
-                        {action}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            );
-          })}
-        </section>
+      {renderWorkspace()}
+    </AppShell>
+  );
+}
 
-        <section aria-labelledby="overview-insights-heading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-          <h2 id="overview-insights-heading" className="sr-only">
-            Overview insights
-          </h2>
-          <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-white">Why this scaffold?</h2>
-                <p className="text-sm text-slate-400">
-                  Start from an opinionated layout that mirrors the final product: sidebar navigation, actionable top bar, and
-                  room for schedule-aware dashboards.
-                </p>
+function OverviewSection() {
+  return (
+    <>
+      <section aria-labelledby="daily-focus-heading" className="grid gap-6 md:grid-cols-3">
+        <h2 id="daily-focus-heading" className="sr-only">
+          Daily focus
+        </h2>
+        {dailyFocus.map((item, index) => {
+          const Icon = item.icon;
+          const titleId = `daily-focus-title-${index}`;
+          const descriptionId = `daily-focus-description-${index}`;
+          return (
+            <article
+              key={item.title}
+              className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-6 text-slate-200 shadow-lg shadow-slate-950/30"
+              aria-labelledby={titleId}
+              aria-describedby={descriptionId}
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                  <Icon className="h-5 w-5" aria-hidden />
+                </span>
+                <h3 id={titleId} className="text-base font-semibold text-white">
+                  {item.title}
+                </h3>
               </div>
-              <span className="rounded-full bg-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent">
-                foundation
-              </span>
-            </div>
-            <ul className="mt-6 list-disc space-y-2 pl-5 text-sm text-slate-300">
-              <li>Split view for navigation, top-level context, and workspace content.</li>
-              <li>Responsive design that adapts to large desktop or narrow laptop screens.</li>
-              <li>Theming aligned with the dark UI direction in the planning docs.</li>
-            </ul>
-          </div>
+              <p id={descriptionId} className="text-sm text-slate-400">
+                {item.description}
+              </p>
+              <ul className="flex flex-wrap gap-2" aria-label="Status tags">
+                {item.actions.map((action) => (
+                  <li key={action}>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs uppercase tracking-wide text-slate-200">
+                      {action}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </article>
+          );
+        })}
+      </section>
 
-          <div className="space-y-4">
-            <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Dev momentum</h3>
-              <p className="mt-2 text-sm text-slate-300">
-                Seed data now loads automatically in development, so upcoming calendar and lesson flows have meaningful
-                content to render.
+      <section aria-labelledby="overview-insights-heading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+        <h2 id="overview-insights-heading" className="sr-only">
+          Overview insights
+        </h2>
+        <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Why this scaffold?</h2>
+              <p className="text-sm text-slate-400">
+                Start from an opinionated layout that mirrors the final product: sidebar navigation, actionable top bar, and
+                room for schedule-aware dashboards.
               </p>
             </div>
-            <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Next milestones</h3>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-300">
-                <li>Build setup forms for trimesters, holidays, and group schedules.</li>
-                <li>Connect calendar views to Dexie data via selectors.</li>
-                <li>Ship lesson editor scaffolding with activity templates.</li>
-              </ul>
-            </div>
-          </div>
-        </section>
-
-        <section aria-labelledby="planner-overview-heading" className="space-y-8 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
-          <div className="flex flex-col items-center gap-4 text-center">
-            <span className="inline-flex items-center gap-2 rounded-full bg-surface/80 px-4 py-2 text-sm font-semibold text-accent ring-1 ring-accent/30">
-              <CalendarClock className="h-4 w-4" aria-hidden />
-              Offline-first agenda planner
+            <span className="rounded-full bg-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent">
+              foundation
             </span>
-            <h1 id="planner-overview-heading" className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
-              Stay ahead of every class across levels and trimesters
-            </h1>
-            <p className="max-w-2xl text-lg text-slate-300">
-              Build a structured teaching agenda that mirrors your classroom reality. Visualize schedules, craft rich lessons,
-              and adapt instantly when plans change.
+          </div>
+          <ul className="mt-6 list-disc space-y-2 pl-5 text-sm text-slate-300">
+            <li>Split view for navigation, top-level context, and workspace content.</li>
+            <li>Responsive design that adapts to large desktop or narrow laptop screens.</li>
+            <li>Theming aligned with the dark UI direction in the planning docs.</li>
+          </ul>
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Dev momentum</h3>
+            <p className="mt-2 text-sm text-slate-300">
+              Seed data now loads automatically in development, so upcoming calendar and lesson flows have meaningful content to
+              render.
             </p>
           </div>
-          <ul className="grid gap-4 text-left md:grid-cols-3" aria-label="Planner highlights">
-            {highlights.map((item) => (
-              <li key={item}>
-                <div className="flex flex-col gap-3 rounded-2xl bg-surface/60 p-6 ring-1 ring-white/10 backdrop-blur">
-                  <Sparkles className="h-5 w-5 text-accent" aria-hidden />
-                  <p className="text-sm font-medium text-slate-200">{item}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <article
-            aria-labelledby="next-up-heading"
-            className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl"
-          >
-            <h2 id="next-up-heading" className="text-2xl font-semibold">
-              Next up
-            </h2>
-            <p className="max-w-xl text-base text-indigo-100">
-              Configure the academic structure, connect schedules, and power the calendar views. This starter interface ships with
-              TailwindCSS, ESLint, and TypeScript so you can dive straight into building the teacher-focused experience.
-            </p>
-          </article>
-        </section>
-
-        <div className="space-y-8">
-          <CalendarWorkspace />
-          <LessonWorkspace />
-          <TrimesterManager />
-          <LevelManager />
-          <GroupManager />
-          <ScheduleBuilder />
-          <HolidayManager />
+          <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-6">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Next milestones</h3>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-300">
+              <li>Build setup forms for trimesters, holidays, and group schedules.</li>
+              <li>Connect calendar views to Dexie data via selectors.</li>
+              <li>Ship lesson editor scaffolding with activity templates.</li>
+            </ul>
+          </div>
         </div>
-      </div>
-    </AppShell>
+      </section>
+
+      <section aria-labelledby="planner-overview-heading" className="space-y-8 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <span className="inline-flex items-center gap-2 rounded-full bg-surface/80 px-4 py-2 text-sm font-semibold text-accent ring-1 ring-accent/30">
+            <CalendarClock className="h-4 w-4" aria-hidden />
+            Offline-first agenda planner
+          </span>
+          <h1 id="planner-overview-heading" className="text-4xl font-bold tracking-tight text-white sm:text-5xl">
+            Stay ahead of every class across levels and trimesters
+          </h1>
+          <p className="max-w-2xl text-lg text-slate-300">
+            Build a structured teaching agenda that mirrors your classroom reality. Visualize schedules, craft rich lessons, and
+            adapt instantly when plans change.
+          </p>
+        </div>
+        <ul className="grid gap-4 text-left md:grid-cols-3" aria-label="Planner highlights">
+          {highlights.map((item) => (
+            <li key={item}>
+              <div className="flex flex-col gap-3 rounded-2xl bg-surface/60 p-6 ring-1 ring-white/10 backdrop-blur">
+                <Sparkles className="h-5 w-5 text-accent" aria-hidden />
+                <p className="text-sm font-medium text-slate-200">{item}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <article
+          aria-labelledby="next-up-heading"
+          className="flex flex-col items-center gap-3 rounded-3xl bg-gradient-to-br from-accent/90 via-accent to-indigo-500 px-8 py-10 text-left text-white shadow-2xl"
+        >
+          <h2 id="next-up-heading" className="text-2xl font-semibold">
+            Next up
+          </h2>
+          <p className="max-w-xl text-base text-indigo-100">
+            Configure the academic structure, connect schedules, and power the calendar views. This starter interface ships with
+            TailwindCSS, ESLint, and TypeScript so you can dive straight into building the teacher-focused experience.
+          </p>
+        </article>
+      </section>
+    </>
   );
 }

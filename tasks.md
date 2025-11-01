@@ -18,7 +18,7 @@
 
 ## Calendar Experience
 - [x] Integrate FullCalendar with month/week/day views and navigation controls.
-- [ ] Map schedules + lessons into FullCalendar events with color rules.
+- [x] Map schedules + lessons into FullCalendar events with color rules.
 - [ ] Add filters for trimester, level, group, lesson status.
 - [ ] Implement calendar range listener to prefetch relevant data.
 - [ ] Design condensed month view rendering (chips, overflow count).

@@ -64,3 +64,17 @@ a {
 .fc .fc-daygrid-more-link {
   color: #cbd5f5;
 }
+
+.fc .lesson-event,
+.fc .placeholder-event {
+  border-radius: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 600;
+}
+
+.fc .placeholder-event {
+  border-style: dashed;
+  font-weight: 500;
+}

@@ -362,8 +362,8 @@ function createPlaceholderEvents(
     const accent = level?.color ?? DEFAULT_ACCENT;
     const isExpected = slot.source === 'expected';
     const placeholderLabel = isExpected ? 'Scheduled session' : 'Placeholder slot';
-    const background = hexToRgba(accent, isExpected ? 0.08 : 0.12);
-    const border = hexToRgba(accent, isExpected ? 0.24 : 0.35);
+    const background = hexToRgba(accent, isExpected ? 0.18 : 0.24);
+    const border = hexToRgba(accent, isExpected ? 0.45 : 0.55);
     const classNames = [
       'placeholder-event',
       isExpected ? 'placeholder-event-expected' : 'placeholder-event-saved',
@@ -378,7 +378,7 @@ function createPlaceholderEvents(
       classNames,
       backgroundColor: background,
       borderColor: border,
-      textColor: '#cbd5f5',
+      textColor: '#f8fafc',
       extendedProps: {
         kind: 'placeholder',
         groupName: group?.displayName ?? 'Unknown group',
@@ -423,11 +423,10 @@ export function CalendarWorkspace() {
   const latestRequestedRange = useRef<string | null>(null);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
-  const [visibleRange, setVisibleRange] = useState<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
-    new WeakMap<HTMLElement, { show: () => void; hide: () => void }>()
+    new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
   );
   const tooltipSourceRef = useRef<HTMLElement | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
@@ -541,7 +540,6 @@ export function CalendarWorkspace() {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
-      setVisibleRange({ start: arg.start, end: arg.end });
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
@@ -655,8 +653,39 @@ export function CalendarWorkspace() {
     lastAutoFocusedDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
+  const scheduleSpan = useMemo(() => {
+    let minStart: Date | null = null;
+    let maxEnd: Date | null = null;
+
+    for (const trimester of calendarData.trimesters) {
+      const start = parseISO(trimester.startDate);
+      const end = parseISO(trimester.endDate);
+
+      if (!isValid(start) || !isValid(end)) {
+        continue;
+      }
+
+      const normalizedStart = startOfDay(start);
+      const normalizedEnd = startOfDay(end);
+
+      if (!minStart || normalizedStart < minStart) {
+        minStart = normalizedStart;
+      }
+
+      if (!maxEnd || normalizedEnd > maxEnd) {
+        maxEnd = normalizedEnd;
+      }
+    }
+
+    if (!minStart || !maxEnd || minStart > maxEnd) {
+      return null;
+    }
+
+    return { start: minStart, end: maxEnd };
+  }, [calendarData.trimesters]);
+
   const expectedScheduleSlots = useMemo(() => {
-    if (!visibleRange) {
+    if (!scheduleSpan) {
       return [] as PlaceholderSlot[];
     }
 
@@ -665,22 +694,18 @@ export function CalendarWorkspace() {
       calendarData.trimesters,
       calendarData.groups,
       calendarData.holidays,
-      visibleRange.start,
-      visibleRange.end
+      scheduleSpan.start,
+      scheduleSpan.end
     );
   }, [
     calendarData.groups,
     calendarData.holidays,
     calendarData.schedules,
     calendarData.trimesters,
-    visibleRange,
+    scheduleSpan,
   ]);
 
   const availablePlaceholders = useMemo(() => {
-    if (!visibleRange) {
-      return calendarData.placeholders;
-    }
-
     const combined = new Map<string, PlaceholderSlot>();
 
     for (const slot of expectedScheduleSlots) {
@@ -704,7 +729,7 @@ export function CalendarWorkspace() {
 
       return a.groupId.localeCompare(b.groupId);
     });
-  }, [calendarData.placeholders, expectedScheduleSlots, visibleRange]);
+  }, [calendarData.placeholders, expectedScheduleSlots]);
 
   const lessons = calendarData.lessons;
 
@@ -1092,10 +1117,6 @@ export function CalendarWorkspace() {
 
   const handleEventDidMount = useCallback(
     (arg: EventMountArg) => {
-      if (activeView === 'dayGridMonth') {
-        return;
-      }
-
       const { event, el } = arg;
       const rawKind = event.extendedProps.kind as string | undefined;
       const kind: 'lesson' | 'placeholder' = rawKind === 'placeholder' ? 'placeholder' : 'lesson';
@@ -1194,14 +1215,24 @@ export function CalendarWorkspace() {
         }
       };
 
+      const handleClick = (event: MouseEvent) => {
+        event.preventDefault();
+        if (tooltipSourceRef.current === el) {
+          hide();
+        } else {
+          show();
+        }
+      };
+
       el.addEventListener('mouseenter', show);
       el.addEventListener('mouseleave', hide);
       el.addEventListener('focus', show);
       el.addEventListener('blur', hide);
+      el.addEventListener('click', handleClick);
 
-      tooltipHandlersRef.current.set(el, { show, hide });
+      tooltipHandlersRef.current.set(el, { show, hide, click: handleClick });
     },
-    [activeView, clearTooltip]
+    [clearTooltip]
   );
 
   const handleEventWillUnmount = useCallback(
@@ -1212,6 +1243,9 @@ export function CalendarWorkspace() {
         arg.el.removeEventListener('mouseleave', handlers.hide);
         arg.el.removeEventListener('focus', handlers.show);
         arg.el.removeEventListener('blur', handlers.hide);
+        if (handlers.click) {
+          arg.el.removeEventListener('click', handlers.click);
+        }
         tooltipHandlersRef.current.delete(arg.el);
       }
 

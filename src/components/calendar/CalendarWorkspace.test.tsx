@@ -1,6 +1,7 @@
 import { addDays, format, getISODay, startOfDay } from 'date-fns';
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as React from 'react';
 
 import type { Group, Level, PlaceholderSlot, Schedule, Trimester } from '../../data/types';
 import { CalendarWorkspace } from './CalendarWorkspace';
@@ -12,28 +13,25 @@ const { gotoDateMock, getAllMock, getInDateRangeMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('@fullcalendar/react', () => {
-  const React = require('react');
-  const { forwardRef, useEffect, useImperativeHandle, useState } = React as typeof import('react');
+  const { forwardRef, useEffect, useImperativeHandle, useState } = React;
 
   return {
     __esModule: true,
     default: forwardRef((props: any, ref: any) => {
-      const [range, setRange] = useState(() => ({
-        start: new Date('2024-01-01T00:00:00.000Z'),
-        end: new Date('2024-01-08T00:00:00.000Z'),
-      }));
+      const [range, setRange] = useState(() => {
+        const now = new Date('2024-01-15T00:00:00.000Z');
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+        const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+        return { start, end };
+      });
 
       useImperativeHandle(ref, () => ({
         getApi: () => ({
           gotoDate: (input: Date | number | string) => {
             const date = input instanceof Date ? input : new Date(input);
             gotoDateMock(date);
-            const start = new Date(date);
-            start.setDate(start.getDate() - 3);
-            start.setHours(0, 0, 0, 0);
-            const end = new Date(date);
-            end.setDate(end.getDate() + 3);
-            end.setHours(0, 0, 0, 0);
+            const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+            const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
             setRange({ start, end });
           },
           prev: vi.fn(),
@@ -54,7 +52,9 @@ vi.mock('@fullcalendar/react', () => {
       return (
         <div data-testid="fullcalendar-mock">
           {(props.events ?? []).map((event: any) => (
-            <div key={event.id}>{event.title}</div>
+            <div key={event.id} data-testid={`event-${event.id}`}>
+              {event.title}
+            </div>
           ))}
         </div>
       );
@@ -85,6 +85,7 @@ const sessionDayOfWeek = 1;
 const sessionOffset = (sessionDayOfWeek - getISODay(trimesterStartDateObj) + 7) % 7;
 const firstSessionDateObj = addDays(trimesterStartDateObj, sessionOffset);
 const firstSessionDate = format(firstSessionDateObj, 'yyyy-MM-dd');
+const secondSessionDate = format(addDays(firstSessionDateObj, 7), 'yyyy-MM-dd');
 
 const trimester: Trimester = {
   id: 'trimester-1',
@@ -184,7 +185,12 @@ describe('CalendarWorkspace schedule navigation', () => {
     const calledDate = gotoDateMock.mock.calls[0][0] as Date;
     expect(format(calledDate, 'yyyy-MM-dd')).toBe(firstSessionDate);
 
-    await screen.findByText('Grade 6A • Scheduled session');
+    const placeholderChips = await screen.findAllByText('Grade 6A • Scheduled session');
+    expect(placeholderChips.length).toBeGreaterThanOrEqual(2);
+
+    await screen.findByTestId(
+      `event-expected_placeholder_${schedule.id}_${secondSessionDate}_${schedule.sessions[0]!.startTime}_${schedule.sessions[0]!.endTime}`
+    );
 
     expect(
       getInDateRangeMock.mock.calls.some((call) => {

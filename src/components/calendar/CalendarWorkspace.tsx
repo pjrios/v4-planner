@@ -661,32 +661,83 @@ export function CalendarWorkspace() {
       }
     };
 
-    const changeEventSource = (db.on as unknown as {
-      changes?: {
-        subscribe?: (listener: typeof handler) => void;
-        unsubscribe?: (listener: typeof handler) => void;
-      };
-    }).changes;
+    const rawOn = db.on as unknown;
 
-    if (changeEventSource?.subscribe) {
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
       changeEventSource.subscribe(handler);
       return () => {
         changeEventSource.unsubscribe?.(handler);
       };
     }
 
-    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
-      changes?: { unsubscribe?: (listener: typeof handler) => void };
-    };
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
 
-    if (typeof directOn === 'function') {
-      directOn('changes', handler);
       return () => {
-        directOn.changes?.unsubscribe?.(handler);
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
       };
     }
 
-    return () => undefined;
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['groups', db.groups.hook],
+      ['levels', db.levels.hook],
+      ['topics', db.topics.hook],
+      ['schedules', db.schedules.hook],
+      ['holidays', db.holidays.hook],
+      ['placeholderSlots', db.placeholderSlots.hook],
+      ['lessons', db.lessons.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const creatingSubscriber = () => {
+        emit();
+      };
+      hooks.creating.subscribe(creatingSubscriber);
+      fallbackCleanups.push(() => hooks.creating.unsubscribe(creatingSubscriber));
+
+      const updatingSubscriber = () => {
+        emit();
+      };
+      hooks.updating.subscribe(updatingSubscriber);
+      fallbackCleanups.push(() => hooks.updating.unsubscribe(updatingSubscriber));
+
+      const deletingSubscriber = () => {
+        emit();
+      };
+      hooks.deleting.subscribe(deletingSubscriber);
+      fallbackCleanups.push(() => hooks.deleting.unsubscribe(deletingSubscriber));
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {

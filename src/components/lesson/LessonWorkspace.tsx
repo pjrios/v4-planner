@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { format, formatDistanceToNow, parseISO } from 'date-fns';
+import { endOfWeek, format, formatDistanceToNow, parseISO, startOfWeek } from 'date-fns';
 import {
   AlertTriangle,
-  ArrowRight,
   BookOpenCheck,
   CalendarClock,
   CalendarDays,
@@ -12,6 +11,7 @@ import {
   ChevronUp,
   Copy,
   ExternalLink,
+  Link,
   Layers,
   Loader2,
   NotebookTabs,
@@ -58,6 +58,28 @@ type LessonDetail = {
   topic?: Topic;
   rubric?: Rubric;
   resourceAttachments: LessonResourceDetail[];
+};
+
+type LessonWeekGroup = {
+  weekKey: string;
+  label: string;
+  startDate: string | null;
+  endDate: string | null;
+  lessons: LessonDetail[];
+};
+
+type LessonTrimesterGroup = {
+  trimesterId: string;
+  trimester: Trimester | null;
+  lessonCount: number;
+  weeks: LessonWeekGroup[];
+};
+
+type LessonLevelGroup = {
+  levelId: string;
+  level: Level | null;
+  totalLessons: number;
+  trimesters: LessonTrimesterGroup[];
 };
 
 type CreateLessonFormState = {
@@ -134,6 +156,26 @@ function formatTimeRange(startTime?: string | null, endTime?: string | null) {
   }
 
   return '--:--';
+}
+
+function formatTrimesterRange(trimester?: Trimester | null) {
+  if (!trimester?.startDate || !trimester?.endDate) {
+    return null;
+  }
+
+  try {
+    const start = parseISO(trimester.startDate);
+    const end = parseISO(trimester.endDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return null;
+    }
+    const startLabel = format(start, 'MMM d');
+    const endLabel = format(end, 'MMM d');
+    return `${startLabel} – ${endLabel}`;
+  } catch (error) {
+    console.warn('Unable to format trimester range', error);
+    return null;
+  }
 }
 
 function parseTimeToMinutes(value: string) {
@@ -435,6 +477,7 @@ export function LessonWorkspace() {
   const [isCopyWizardOpen, setIsCopyWizardOpen] = useState(false);
   const [isCreateLessonOpen, setIsCreateLessonOpen] = useState(false);
   const [expandedLevelIds, setExpandedLevelIds] = useState<string[]>([]);
+  const [expandedTrimesterKeys, setExpandedTrimesterKeys] = useState<string[]>([]);
   const [createLessonForm, setCreateLessonForm] = useState<CreateLessonFormState>({
     levelId: '',
     groupId: '',
@@ -648,7 +691,7 @@ export function LessonWorkspace() {
   );
 
   const buildInitialCreateForm = useCallback(
-    (preferredLevelId?: string, preferredGroupId?: string) => {
+    (preferredLevelId?: string, preferredGroupId?: string, preferredTrimesterId?: string) => {
       const initialLevelId = preferredLevelId && levelLibrary.some((level) => level.id === preferredLevelId)
         ? preferredLevelId
         : levelLibrary[0]?.id ?? '';
@@ -657,7 +700,7 @@ export function LessonWorkspace() {
         levelId: initialLevelId,
         groupId: preferredGroupId ?? '',
         topicId: '',
-        trimesterId: '',
+        trimesterId: preferredTrimesterId ?? '',
         slotId: '',
         status: 'planned',
       };
@@ -692,6 +735,10 @@ export function LessonWorkspace() {
     () => new Map(scheduleLibrary.map((schedule) => [schedule.groupId, schedule])),
     [scheduleLibrary]
   );
+  const trimesterMap = useMemo(
+    () => new Map(trimesterLibrary.map((trimester) => [trimester.id, trimester])),
+    [trimesterLibrary]
+  );
 
   const lessonById = useMemo(() => {
     return lessons.reduce<Record<string, LessonDetail>>((acc, detail) => {
@@ -711,40 +758,208 @@ export function LessonWorkspace() {
     });
   }, [levelLibrary]);
 
+  const sortedTrimesters = useMemo(() => {
+    return [...trimesterLibrary].sort((a, b) => a.startDate.localeCompare(b.startDate));
+  }, [trimesterLibrary]);
+
+  const trimesterOrder = useMemo(() => {
+    const order = new Map<string, number>();
+    sortedTrimesters.forEach((trimester, index) => {
+      order.set(trimester.id, index);
+    });
+    return order;
+  }, [sortedTrimesters]);
+
   const groupedLessons = useMemo(() => {
-    const buckets: Array<{ levelId: string; level: Level | null; lessons: LessonDetail[] }> = sortedLevels.map((level) => ({
-      levelId: level.id,
-      level,
-      lessons: [] as LessonDetail[],
-    }));
-    const bucketMap = new Map(buckets.map((entry) => [entry.levelId, entry]));
-    const unassigned: LessonDetail[] = [];
+    type InternalTrimesterBucket = {
+      trimesterId: string;
+      trimester: Trimester | null;
+      weeks: Map<string, LessonWeekGroup>;
+      lessonCount: number;
+    };
+
+    type InternalLevelBucket = {
+      levelId: string;
+      level: Level | null;
+      trimesterBuckets: Map<string, InternalTrimesterBucket>;
+      totalLessons: number;
+    };
+
+    const createTrimesterBucket = (trimesterId: string, trimester: Trimester | null): InternalTrimesterBucket => ({
+      trimesterId,
+      trimester,
+      weeks: new Map(),
+      lessonCount: 0,
+    });
+
+    const createLevelBucket = (levelId: string, level: Level | null): InternalLevelBucket => {
+      const trimesterBuckets = new Map<string, InternalTrimesterBucket>();
+      sortedTrimesters.forEach((trimester) => {
+        trimesterBuckets.set(trimester.id, createTrimesterBucket(trimester.id, trimester));
+      });
+      return {
+        levelId,
+        level,
+        trimesterBuckets,
+        totalLessons: 0,
+      };
+    };
+
+    const ensureLevelBucket = (levelId: string, level: Level | null) => {
+      if (!levelBuckets.has(levelId)) {
+        levelBuckets.set(levelId, createLevelBucket(levelId, level));
+      }
+      return levelBuckets.get(levelId)!;
+    };
+
+    const ensureTrimesterBucket = (
+      bucket: InternalLevelBucket,
+      trimesterId: string,
+      trimester: Trimester | null
+    ) => {
+      if (!bucket.trimesterBuckets.has(trimesterId)) {
+        bucket.trimesterBuckets.set(trimesterId, createTrimesterBucket(trimesterId, trimester));
+      }
+      return bucket.trimesterBuckets.get(trimesterId)!;
+    };
+
+    const ensureWeekBucket = (
+      trimesterBucket: InternalTrimesterBucket,
+      sessionDate: string | null
+    ) => {
+      let key = 'unscheduled';
+      let label = 'Unscheduled lessons';
+      let startValue: string | null = null;
+      let endValue: string | null = null;
+
+      if (sessionDate) {
+        try {
+          const parsed = parseISO(sessionDate);
+          if (!Number.isNaN(parsed.getTime())) {
+            const start = startOfWeek(parsed, { weekStartsOn: 1 });
+            const end = endOfWeek(parsed, { weekStartsOn: 1 });
+            startValue = format(start, 'yyyy-MM-dd');
+            endValue = format(end, 'yyyy-MM-dd');
+            key = `week_${startValue}`;
+            label = `Week of ${format(start, 'MMM d')} – ${format(end, 'MMM d')}`;
+          }
+        } catch (error) {
+          console.warn('Unable to compute week grouping for lesson', error);
+        }
+      }
+
+      if (!trimesterBucket.weeks.has(key)) {
+        trimesterBucket.weeks.set(key, {
+          weekKey: key,
+          label,
+          startDate: startValue,
+          endDate: endValue,
+          lessons: [],
+        });
+      }
+
+      return trimesterBucket.weeks.get(key)!;
+    };
+
+    const levelBuckets = new Map<string, InternalLevelBucket>();
+    sortedLevels.forEach((level) => {
+      levelBuckets.set(level.id, createLevelBucket(level.id, level));
+    });
 
     for (const detail of lessons) {
-      const levelId = detail.level?.id ?? detail.group?.levelId ?? null;
-      if (levelId && bucketMap.has(levelId)) {
-        bucketMap.get(levelId)!.lessons.push(detail);
-      } else {
-        unassigned.push(detail);
-      }
+      const slot = resolveLessonSlot(detail.lesson);
+      const levelId = detail.level?.id ?? detail.group?.levelId ?? 'unassigned';
+      const levelRef = levelId === 'unassigned' ? null : levelMap.get(levelId) ?? detail.level ?? null;
+      const levelBucket = ensureLevelBucket(levelId, levelRef);
+
+      const rawTrimesterId =
+        slot?.trimesterId ?? detail.lesson.trimesterId ?? detail.topic?.trimesterId ?? '';
+      const trimesterId = rawTrimesterId || 'unassigned';
+      const trimester = trimesterMap.get(trimesterId) ?? null;
+      const trimesterBucket = ensureTrimesterBucket(levelBucket, trimesterId, trimester);
+
+      const sessionDate = slot?.date ?? detail.lesson.date ?? null;
+      const weekBucket = ensureWeekBucket(trimesterBucket, sessionDate);
+      weekBucket.lessons.push(detail);
+      trimesterBucket.lessonCount += 1;
+      levelBucket.totalLessons += 1;
     }
 
-    const result = buckets.map((entry) => ({
-      levelId: entry.levelId,
-      level: entry.level,
-      lessons: sortLessonDetails(entry.lessons),
-    }));
+    const buildWeeks = (bucket: InternalTrimesterBucket): LessonWeekGroup[] => {
+      const weeks = Array.from(bucket.weeks.values()).map((week) => ({
+        ...week,
+        lessons: sortLessonDetails(week.lessons),
+      }));
 
-    if (unassigned.length) {
-      result.push({
-        levelId: 'unassigned',
-        level: null,
-        lessons: sortLessonDetails(unassigned),
+      return weeks.sort((a, b) => {
+        if (a.startDate && b.startDate) {
+          return a.startDate.localeCompare(b.startDate);
+        }
+        if (a.startDate) return -1;
+        if (b.startDate) return 1;
+        return a.label.localeCompare(b.label);
       });
-    }
+    };
+
+    const buildTrimesterGroups = (bucket: InternalLevelBucket): LessonTrimesterGroup[] => {
+      const ordered: LessonTrimesterGroup[] = [];
+
+      sortedTrimesters.forEach((trimester) => {
+        const entry = bucket.trimesterBuckets.get(trimester.id);
+        if (!entry) {
+          return;
+        }
+        ordered.push({
+          trimesterId: entry.trimesterId,
+          trimester: entry.trimester,
+          lessonCount: entry.lessonCount,
+          weeks: buildWeeks(entry),
+        });
+      });
+
+      const remaining = Array.from(bucket.trimesterBuckets.values()).filter(
+        (entry) => !trimesterOrder.has(entry.trimesterId)
+      );
+
+      remaining
+        .filter((entry) => entry.lessonCount > 0)
+        .sort((a, b) => a.trimesterId.localeCompare(b.trimesterId))
+        .forEach((entry) => {
+          ordered.push({
+            trimesterId: entry.trimesterId,
+            trimester: entry.trimester,
+            lessonCount: entry.lessonCount,
+            weeks: buildWeeks(entry),
+          });
+        });
+
+      return ordered;
+    };
+
+    const seenLevelIds = new Set(sortedLevels.map((level) => level.id));
+    const result: LessonLevelGroup[] = sortedLevels.map((level) => {
+      const bucket = ensureLevelBucket(level.id, level);
+      return {
+        levelId: bucket.levelId,
+        level: bucket.level,
+        totalLessons: bucket.totalLessons,
+        trimesters: buildTrimesterGroups(bucket),
+      };
+    });
+
+    Array.from(levelBuckets.values())
+      .filter((bucket) => !seenLevelIds.has(bucket.levelId) && bucket.totalLessons > 0)
+      .forEach((bucket) => {
+        result.push({
+          levelId: bucket.levelId,
+          level: bucket.level,
+          totalLessons: bucket.totalLessons,
+          trimesters: buildTrimesterGroups(bucket),
+        });
+      });
 
     return result;
-  }, [lessons, sortedLevels]);
+  }, [lessons, resolveLessonSlot, sortedLevels, sortedTrimesters, trimesterMap, trimesterOrder, levelMap]);
 
   useEffect(() => {
     const available = groupedLessons.map((entry) => entry.levelId);
@@ -760,11 +975,25 @@ export function LessonWorkspace() {
     });
   }, [groupedLessons]);
 
+  useEffect(() => {
+    const availableKeys = groupedLessons.flatMap((entry) =>
+      entry.trimesters.map((trimester) => `${entry.levelId}:${trimester.trimesterId}`)
+    );
+    setExpandedTrimesterKeys((current) => current.filter((key) => availableKeys.includes(key)));
+  }, [groupedLessons]);
+
   const toggleLevelExpansion = useCallback((levelId: string) => {
     setExpandedLevelIds((current) =>
       current.includes(levelId)
         ? current.filter((id) => id !== levelId)
         : [...current, levelId]
+    );
+  }, []);
+
+  const toggleTrimesterExpansion = useCallback((levelId: string, trimesterId: string) => {
+    const key = `${levelId}:${trimesterId}`;
+    setExpandedTrimesterKeys((current) =>
+      current.includes(key) ? current.filter((entry) => entry !== key) : [...current, key]
     );
   }, []);
 
@@ -785,9 +1014,9 @@ export function LessonWorkspace() {
   );
 
   const openCreateLesson = useCallback(
-    (levelId?: string, groupId?: string) => {
+    (levelId?: string, groupId?: string, trimesterId?: string) => {
       setCreateLessonError(null);
-      setCreateLessonForm(buildInitialCreateForm(levelId, groupId));
+      setCreateLessonForm(buildInitialCreateForm(levelId, groupId, trimesterId));
       setIsCreateLessonOpen(true);
     },
     [buildInitialCreateForm]
@@ -1303,7 +1532,7 @@ export function LessonWorkspace() {
         ) : groupedLessons.length ? (
           <ul className="space-y-4">
             {groupedLessons.map((entry) => {
-              const { levelId, level, lessons: levelLessons } = entry;
+              const { levelId, level, totalLessons, trimesters } = entry;
               const isExpanded = expandedLevelIds.includes(levelId);
               const levelLabel = level
                 ? `Grade ${level.gradeNumber} ${level.subject}`
@@ -1323,8 +1552,8 @@ export function LessonWorkspace() {
                         <div>
                           <p className="text-sm font-semibold text-white">{levelLabel}</p>
                           <p className="text-xs text-slate-400">
-                            {levelLessons.length
-                              ? `${levelLessons.length} lesson${levelLessons.length === 1 ? '' : 's'}`
+                            {totalLessons
+                              ? `${totalLessons} lesson${totalLessons === 1 ? '' : 's'}`
                               : 'No lessons yet'}
                           </p>
                         </div>
@@ -1344,65 +1573,146 @@ export function LessonWorkspace() {
                   </div>
                   {isExpanded ? (
                     <div className="border-t border-white/10 bg-slate-950/60 px-5 py-4">
-                      {levelLessons.length ? (
+                      {trimesters.length ? (
                         <ul className="space-y-3">
-                          {levelLessons.map((detail) => {
-                            const { lesson, topic, group } = detail;
-                            const levelInfo = detail.level ?? level;
-                            const slot = resolveLessonSlot(lesson);
-                            const sessionDate = slot?.date ?? lesson.date;
-                            const sessionTime = formatTimeRange(
-                              slot?.startTime,
-                              slot?.endTime
-                            );
+                          {trimesters.map((trimesterGroup) => {
+                            const { trimesterId, trimester, lessonCount, weeks } = trimesterGroup;
+                            const trimesterKey = `${levelId}:${trimesterId}`;
+                            const isTrimesterExpanded = expandedTrimesterKeys.includes(trimesterKey);
+                            const trimesterLabel = trimester?.name ?? 'Unassigned trimester';
+                            const trimesterRange = formatTrimesterRange(trimester);
+                            const canCreateInTrimester = trimesterId !== 'unassigned';
                             return (
-                              <li key={lesson.id}>
-                                <button
-                                  type="button"
-                                  onClick={() => setActiveLessonId(lesson.id)}
-                                  className="group flex w-full flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:border-accent/60 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                                  aria-describedby={`lesson-${lesson.id}-summary`}
-                                >
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div className="flex items-center gap-3 text-sm font-semibold text-white">
-                                      <BookOpenCheck className="h-4 w-4 text-accent" aria-hidden />
-                                      <span>{topic?.name ?? 'Untitled lesson'}</span>
+                              <li key={trimesterId} className="rounded-xl border border-white/10 bg-slate-900/50">
+                                <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleTrimesterExpansion(levelId, trimesterId)}
+                                    className="flex flex-1 items-center justify-between gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <CalendarDays className="h-4 w-4 text-accent" aria-hidden />
+                                      <div>
+                                        <p className="text-sm font-semibold text-white">{trimesterLabel}</p>
+                                        <p className="text-xs text-slate-400">
+                                          {lessonCount
+                                            ? `${lessonCount} lesson${lessonCount === 1 ? '' : 's'}`
+                                            : 'No lessons yet'}
+                                          {trimesterRange ? ` • ${trimesterRange}` : ''}
+                                        </p>
+                                      </div>
                                     </div>
-                                    <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-slate-200">
-                                      {LESSON_STATUS_LABELS[lesson.status]}
+                                    <span className="rounded-full border border-white/10 bg-white/5 p-1 text-slate-300">
+                                      {isTrimesterExpanded ? (
+                                        <ChevronUp className="h-4 w-4" aria-hidden />
+                                      ) : (
+                                        <ChevronDown className="h-4 w-4" aria-hidden />
+                                      )}
                                     </span>
+                                  </button>
+                                  {canCreateInTrimester ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => openCreateLesson(level?.id, undefined, trimesterId)}
+                                      className="inline-flex items-center gap-2 self-start rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/60 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                    >
+                                      <Plus className="h-3.5 w-3.5" aria-hidden />
+                                      Add lesson
+                                    </button>
+                                  ) : null}
+                                </div>
+                                {isTrimesterExpanded ? (
+                                  <div className="border-t border-white/10 bg-slate-950/70 px-4 py-4">
+                                    {weeks.length ? (
+                                      <ul className="space-y-3">
+                                        {weeks.map((week) => (
+                                          <li key={week.weekKey} className="rounded-lg border border-white/10 bg-white/5 p-4">
+                                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                              <div>
+                                                <p className="text-sm font-semibold text-white">{week.label}</p>
+                                                <p className="text-xs text-slate-400">
+                                                  {week.lessons.length
+                                                    ? `${week.lessons.length} lesson${week.lessons.length === 1 ? '' : 's'}`
+                                                    : 'No lessons yet'}
+                                                </p>
+                                              </div>
+                                            </div>
+                                            {week.lessons.length ? (
+                                              <ul className="mt-3 space-y-2">
+                                                {week.lessons.map((detail) => {
+                                                  const { lesson, topic, group } = detail;
+                                                  const levelInfo = detail.level ?? level;
+                                                  const slot = resolveLessonSlot(lesson);
+                                                  const sessionDate = slot?.date ?? lesson.date;
+                                                  const sessionTime = formatTimeRange(slot?.startTime, slot?.endTime);
+                                                  const objectiveCount = collectObjectives(lesson).length;
+                                                  return (
+                                                    <li key={lesson.id}>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => setActiveLessonId(lesson.id)}
+                                                        className="group flex w-full flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:border-accent/60 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                                        aria-describedby={`lesson-${lesson.id}-summary`}
+                                                      >
+                                                        <div className="flex items-center justify-between gap-3">
+                                                          <div className="flex items-center gap-3 text-sm font-semibold text-white">
+                                                            <BookOpenCheck className="h-4 w-4 text-accent" aria-hidden />
+                                                            <span>{topic?.name ?? 'Untitled lesson'}</span>
+                                                          </div>
+                                                          <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-slate-200">
+                                                            {LESSON_STATUS_LABELS[lesson.status]}
+                                                          </span>
+                                                        </div>
+                                                        <p id={`lesson-${lesson.id}-summary`} className="text-sm text-slate-300">
+                                                          {group?.displayName ? `${group.displayName} · ` : ''}
+                                                          {formatDate(sessionDate)} · {sessionTime}
+                                                        </p>
+                                                        <div className="flex flex-wrap gap-2 text-xs text-slate-400">
+                                                          {levelInfo ? (
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2.5 py-1">
+                                                              <Layers className="h-3.5 w-3.5" aria-hidden />
+                                                              <span>{levelInfo.subject}</span>
+                                                            </span>
+                                                          ) : null}
+                                                          {objectiveCount ? (
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2.5 py-1">
+                                                              <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                                                              <span>
+                                                                {objectiveCount} goal{objectiveCount === 1 ? '' : 's'}
+                                                              </span>
+                                                            </span>
+                                                          ) : null}
+                                                          {lesson.linkedLessonIds?.length ? (
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2.5 py-1">
+                                                              <Link className="h-3.5 w-3.5" aria-hidden />
+                                                              <span>Linked to {lesson.linkedLessonIds.length}</span>
+                                                            </span>
+                                                          ) : null}
+                                                        </div>
+                                                      </button>
+                                                    </li>
+                                                  );
+                                                })}
+                                              </ul>
+                                            ) : null}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <p className="rounded-xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                                        No lessons planned for this trimester yet.
+                                      </p>
+                                    )}
                                   </div>
-                                  <p id={`lesson-${lesson.id}-summary`} className="text-sm text-slate-300">
-                                    {group?.displayName ? `${group.displayName} · ` : ''}
-                                    {formatDate(sessionDate)} · {sessionTime}
-                                  </p>
-                                  <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-                                    {levelInfo ? (
-                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-1">
-                                        <Layers className="h-3.5 w-3.5" aria-hidden />
-                                        {`Grade ${levelInfo.gradeNumber} ${levelInfo.subject}`}
-                                      </span>
-                                    ) : null}
-                                    {topic?.estimatedSessions ? (
-                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-1">
-                                        <CalendarDays className="h-3.5 w-3.5" aria-hidden />
-                                        {`${topic.estimatedSessions} session plan`}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div className="flex items-center gap-2 text-xs font-semibold text-accent opacity-0 transition group-hover:opacity-100">
-                                    View lesson details
-                                    <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                                  </div>
-                                </button>
+                                ) : null}
                               </li>
                             );
                           })}
                         </ul>
                       ) : (
-                        <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 p-6 text-center text-sm text-slate-400">
-                          No lessons for this level yet. Use “Add lesson” to start planning.
-                        </div>
+                        <p className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                          No lessons yet. Use the buttons above to start planning for this level.
+                        </p>
                       )}
                     </div>
                   ) : null}

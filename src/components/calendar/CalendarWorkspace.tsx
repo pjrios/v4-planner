@@ -695,6 +695,8 @@ export function CalendarWorkspace() {
             : undefined;
         maybeChanges?.unsubscribe?.(handler);
       };
+      hooks.deleting.subscribe(deletingSubscriber);
+      fallbackCleanups.push(() => hooks.deleting.unsubscribe(deletingSubscriber));
     }
 
     const fallbackCleanups: Array<() => void> = [];

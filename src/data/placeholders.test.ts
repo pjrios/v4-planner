@@ -125,4 +125,36 @@ describe('computePlaceholderSlotsForSchedule', () => {
     expect(beyondFirstTrimester.length).toBeGreaterThan(0);
     expect(slots.some((slot) => slot.date === '2024-04-08')).toBe(true);
   });
+
+  it('falls back to covering all trimesters when none are active', () => {
+    const trimesters: Trimester[] = [
+      {
+        id: 'trimester-a',
+        name: 'Trimester A',
+        startDate: '2023-01-01',
+        endDate: '2023-03-01',
+        totalWeeks: 9,
+        schoolDays: 45,
+        color: '#0f172a',
+        status: 'completed',
+        academicYear: '2022-2023',
+      },
+      {
+        id: 'trimester-b',
+        name: 'Trimester B',
+        startDate: '2023-04-01',
+        endDate: '2023-06-01',
+        totalWeeks: 9,
+        schoolDays: 45,
+        color: '#1e293b',
+        status: 'completed',
+        academicYear: '2022-2023',
+      },
+    ];
+
+    const span = getActiveTrimesterSpan(trimesters);
+    expect(span).not.toBeNull();
+    expect(format(span!.start, 'yyyy-MM-dd')).toBe('2023-01-01');
+    expect(format(span!.end, 'yyyy-MM-dd')).toBe('2023-06-01');
+  });
 });

@@ -128,14 +128,12 @@ function shiftOccurrenceForward(
 }
 
 export function getActiveTrimesterSpan(trimesters: Trimester[]) {
-  let earliest: Date | null = null;
-  let latest: Date | null = null;
+  let earliestActive: Date | null = null;
+  let latestActive: Date | null = null;
+  let earliestAny: Date | null = null;
+  let latestAny: Date | null = null;
 
   for (const trimester of trimesters) {
-    if (trimester.status === 'completed') {
-      continue;
-    }
-
     const start = parseISO(trimester.startDate);
     const end = parseISO(trimester.endDate);
 
@@ -150,14 +148,29 @@ export function getActiveTrimesterSpan(trimesters: Trimester[]) {
     const normalizedStart = startOfDay(start);
     const normalizedEnd = startOfDay(end);
 
-    if (!earliest || normalizedStart < earliest) {
-      earliest = normalizedStart;
+    if (!earliestAny || normalizedStart < earliestAny) {
+      earliestAny = normalizedStart;
     }
 
-    if (!latest || normalizedEnd > latest) {
-      latest = normalizedEnd;
+    if (!latestAny || normalizedEnd > latestAny) {
+      latestAny = normalizedEnd;
+    }
+
+    if (trimester.status === 'completed') {
+      continue;
+    }
+
+    if (!earliestActive || normalizedStart < earliestActive) {
+      earliestActive = normalizedStart;
+    }
+
+    if (!latestActive || normalizedEnd > latestActive) {
+      latestActive = normalizedEnd;
     }
   }
+
+  const earliest = earliestActive ?? earliestAny;
+  const latest = latestActive ?? latestAny;
 
   if (!earliest || !latest) {
     return null as PlaceholderGenerationRange | null;

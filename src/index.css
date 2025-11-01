@@ -65,8 +65,8 @@ a {
   color: #cbd5f5;
 }
 
-.fc .lesson-event,
-.fc .placeholder-event {
+.fc .fc-timegrid-event.lesson-event,
+.fc .fc-timegrid-event.placeholder-event {
   border-radius: 0.75rem;
   padding: 0.35rem 0.5rem;
   font-size: 0.75rem;
@@ -74,7 +74,114 @@ a {
   font-weight: 600;
 }
 
-.fc .placeholder-event {
+.fc .fc-timegrid-event.placeholder-event {
   border-style: dashed;
   font-weight: 500;
+}
+
+.fc .fc-daygrid-event.lesson-event,
+.fc .fc-daygrid-event.placeholder-event {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.fc .fc-daygrid-event.lesson-event .fc-event-main,
+.fc .fc-daygrid-event.placeholder-event .fc-event-main {
+  padding: 0;
+}
+
+.fc .fc-daygrid-day-events {
+  padding: 0.35rem 0.4rem 0.5rem;
+}
+
+.fc .fc-daygrid-day-events .fc-daygrid-event {
+  margin-top: 0.35rem;
+}
+
+.fc .fc-daygrid-day-events .fc-daygrid-event:first-child {
+  margin-top: 0;
+}
+
+.fc .fc-month-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  font-weight: 600;
+  width: 100%;
+  box-sizing: border-box;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.22);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.fc .fc-month-chip:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.fc .fc-month-chip-indicator {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.5);
+}
+
+.fc .fc-month-chip-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc .fc-month-chip-time {
+  flex: 0 0 auto;
+  font-size: 0.625rem;
+  font-weight: 600;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.fc .fc-month-chip-status {
+  flex: 0 0 auto;
+  font-size: 0.625rem;
+  font-weight: 700;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.12);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.fc .fc-month-chip-placeholder {
+  border-style: dashed;
+}
+
+.fc .fc-month-chip-placeholder .fc-month-chip-status {
+  display: none;
+}
+
+.fc .fc-more-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #cbd5f5;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.fc .fc-more-chip:hover {
+  background: rgba(99, 102, 241, 0.3);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: #e0e7ff;
 }

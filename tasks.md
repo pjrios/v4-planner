@@ -21,7 +21,7 @@
 - [x] Map schedules + lessons into FullCalendar events with color rules.
 - [x] Add filters for trimester, level, group, lesson status.
 - [x] Implement calendar range listener to prefetch relevant data.
-- [ ] Design condensed month view rendering (chips, overflow count).
+- [x] Design condensed month view rendering (chips, overflow count).
 - [ ] Create day/week tooltips and keyboard shortcuts.
 
 ## Lesson Planning

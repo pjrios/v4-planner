@@ -5,7 +5,7 @@ import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
-import type { DatesSetArg, EventInput } from '@fullcalendar/core';
+import type { DatesSetArg, EventContentArg, EventInput, MoreLinkContentArg } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore } from '../../data/db';
 import type {
@@ -62,6 +62,50 @@ function toDateTime(date: string, time: string) {
   }
   const suffix = time.includes(':') && time.length === 5 ? `${time}:00` : time;
   return `${date}T${suffix}`;
+}
+
+function escapeHtml(value: string | undefined | null) {
+  if (!value) {
+    return '';
+  }
+
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatTimeLabel(time: string | undefined | null) {
+  if (!time) {
+    return '';
+  }
+
+  const [rawHour, rawMinute] = time.split(':');
+  const hour = Number.parseInt(rawHour ?? '', 10);
+  const minute = Number.parseInt(rawMinute ?? '', 10);
+
+  if (Number.isNaN(hour) || Number.isNaN(minute)) {
+    return time;
+  }
+
+  const suffix = hour >= 12 ? 'p' : 'a';
+  const normalizedHour = ((hour + 11) % 12) + 1;
+  const paddedMinute = minute.toString().padStart(2, '0');
+
+  return `${normalizedHour}:${paddedMinute}${suffix}`;
+}
+
+function formatTimeRange(startTime: string | undefined | null, endTime: string | undefined | null) {
+  const startLabel = formatTimeLabel(startTime);
+  const endLabel = formatTimeLabel(endTime);
+
+  if (startLabel && endLabel) {
+    return `${startLabel}–${endLabel}`;
+  }
+
+  return startLabel || endLabel || '';
 }
 
 function hexToRgba(hexColor: string | undefined | null, alpha: number) {
@@ -139,6 +183,9 @@ function createLessonEvents(
         statusLabel: titleCaseStatus(lesson.status),
         groupName: group?.displayName ?? 'Unknown group',
         topicName: topic?.name ?? 'Untitled lesson',
+        accentColor: baseColor,
+        startTime: lesson.startTime,
+        endTime: lesson.endTime,
       },
     });
 
@@ -180,6 +227,9 @@ function createPlaceholderEvents(
         kind: 'placeholder',
         groupName: group?.displayName ?? 'Unknown group',
         levelColor: accent,
+        accentColor: accent,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
       },
     });
   }
@@ -531,6 +581,71 @@ export function CalendarWorkspace() {
   const loadError = baseError ?? rangeError;
   const isLoading = (isBaseLoading || isRangeLoading) && loadError === null;
 
+  const renderEventContent = useCallback(
+    (arg: EventContentArg) => {
+      if (activeView !== 'dayGridMonth') {
+        return undefined;
+      }
+
+      const { event } = arg;
+      const kind = (event.extendedProps.kind as string | undefined) ?? 'lesson';
+      const statusLabel = event.extendedProps.statusLabel as string | undefined;
+      const groupName = event.extendedProps.groupName as string | undefined;
+      const topicName = event.extendedProps.topicName as string | undefined;
+      const startTime = event.extendedProps.startTime as string | undefined;
+      const endTime = event.extendedProps.endTime as string | undefined;
+      const timeLabel = formatTimeRange(startTime, endTime);
+      const accentColor =
+        (event.extendedProps.accentColor as string | undefined) ?? event.backgroundColor ?? DEFAULT_ACCENT;
+
+      const label =
+        kind === 'lesson'
+          ? `${groupName ?? 'Lesson'}${topicName ? ` • ${topicName}` : ''}`
+          : `${groupName ?? 'Group'} • Slot`;
+
+      const tooltipParts = [label];
+      if (timeLabel) {
+        tooltipParts.push(timeLabel);
+      }
+      if (kind === 'lesson' && statusLabel) {
+        tooltipParts.push(statusLabel);
+      }
+
+      const tooltip = tooltipParts.join(' • ');
+      const backgroundColor = event.backgroundColor ?? 'rgba(148, 163, 184, 0.15)';
+      const borderColor = event.borderColor ?? 'rgba(148, 163, 184, 0.25)';
+      const textColor = event.textColor ?? '#e2e8f0';
+
+      const indicatorHtml = `<span class="fc-month-chip-indicator" style="background:${accentColor};"></span>`;
+      const labelHtml = `<span class="fc-month-chip-label">${escapeHtml(label)}</span>`;
+      const timeHtml = timeLabel ? `<span class="fc-month-chip-time">${escapeHtml(timeLabel)}</span>` : '';
+      const statusHtml =
+        kind === 'lesson' && statusLabel
+          ? `<span class="fc-month-chip-status">${escapeHtml(statusLabel)}</span>`
+          : '';
+
+      const html = `<div class="fc-month-chip ${kind === 'lesson' ? 'fc-month-chip-lesson' : 'fc-month-chip-placeholder'}" style="background:${backgroundColor};border-color:${borderColor};color:${textColor};" title="${escapeHtml(tooltip)}">${indicatorHtml}${labelHtml}${timeHtml}${statusHtml}</div>`;
+
+      return { html };
+    },
+    [activeView]
+  );
+
+  const renderMoreLinkContent = useCallback(
+    (arg: MoreLinkContentArg) => {
+      if (activeView !== 'dayGridMonth') {
+        return arg.text;
+      }
+
+      return `+${arg.num} more`;
+    },
+    [activeView]
+  );
+
+  const moreLinkClassNames = useMemo(() => (activeView === 'dayGridMonth' ? ['fc-more-chip'] : []), [activeView]);
+  const dayMaxEventsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
+  const dayMaxEventRowsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
+
   return (
     <section
       aria-labelledby="calendar-workspace-heading"
@@ -696,7 +811,8 @@ export function CalendarWorkspace() {
           height="auto"
           weekends
           expandRows
-          dayMaxEvents
+          dayMaxEvents={dayMaxEventsValue}
+          dayMaxEventRows={dayMaxEventRowsValue}
           firstDay={1}
           nowIndicator
           allDaySlot={false}
@@ -705,6 +821,9 @@ export function CalendarWorkspace() {
           datesSet={handleDatesSet}
           events={filteredEvents}
           eventDisplay="block"
+          eventContent={renderEventContent}
+          moreLinkContent={renderMoreLinkContent}
+          moreLinkClassNames={moreLinkClassNames}
         />
       </div>
     </section>

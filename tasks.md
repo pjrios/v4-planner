@@ -9,28 +9,28 @@
 - [x] Seed demo data loader for development environment.
 
 ## Setup & Data Management
-- [ ] Build Trimester manager (list/add/edit date ranges, color pick).
-- [ ] Implement Holiday manager with group/level scope selection.
-- [ ] Create Level creation flow (grade number, subject, color).
-- [ ] Generate groups automatically (A/B/C) with edit/remove UI.
-- [ ] Develop schedule builder: weekly grid, add session, conflict validation.
-- [ ] Persist schedules and recompute cached placeholder slots.
+- [x] Build Trimester manager (list/add/edit date ranges, color pick).
+- [x] Implement Holiday manager with group/level scope selection.
+- [x] Create Level creation flow (grade number, subject, color).
+- [x] Generate groups automatically (A/B/C) with edit/remove UI.
+- [x] Develop schedule builder: weekly grid, add session, conflict validation.
+- [x] Persist schedules and recompute cached placeholder slots.
 
 ## Calendar Experience
-- [ ] Integrate FullCalendar with month/week/day views and navigation controls.
-- [ ] Map schedules + lessons into FullCalendar events with color rules.
-- [ ] Add filters for trimester, level, group, lesson status.
-- [ ] Implement calendar range listener to prefetch relevant data.
-- [ ] Design condensed month view rendering (chips, overflow count).
-- [ ] Create day/week tooltips and keyboard shortcuts.
+- [x] Integrate FullCalendar with month/week/day views and navigation controls.
+- [x] Map schedules + lessons into FullCalendar events with color rules.
+- [x] Add filters for trimester, level, group, lesson status.
+- [x] Implement calendar range listener to prefetch relevant data.
+- [x] Design condensed month view rendering (chips, overflow count).
+- [x] Create day/week tooltips and keyboard shortcuts.
 
 ## Lesson Planning
-- [ ] Build Lesson drawer/modal shell with tab navigation.
-- [ ] Implement structured fields for pre/while/post activities and validations.
-- [ ] Add resource and rubric selectors with attachment metadata.
-- [ ] Enable autosave (debounce) with “Last saved” indicator.
-- [ ] Create activity templates library and insertion flow.
-- [ ] Implement copy-to-level wizard with duration match check.
+- [x] Build Lesson drawer/modal shell with tab navigation.
+- [x] Implement structured fields for pre/while/post activities and validations.
+- [x] Add resource and rubric selectors with attachment metadata.
+- [x] Enable autosave (debounce) with “Last saved” indicator.
+- [x] Create activity templates library and insertion flow.
+- [x] Implement copy-to-level wizard with duration match check.
 - [ ] Handle linked lessons (edit all/this/unlink options).
 - [ ] Add completion status workflow and notes.
 

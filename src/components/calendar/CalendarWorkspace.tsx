@@ -31,6 +31,7 @@ import type {
   Group,
   Holiday,
   Lesson,
+  LessonPhase,
   LessonStatus,
   LessonPhaseType,
   Level,
@@ -110,6 +111,19 @@ type DayDetailLessonPreview = {
   accentColor: string;
 };
 
+type EditingLessonState = {
+  lesson: Lesson;
+  status: LessonStatus;
+  startTime: string;
+  endTime: string;
+  objectives: string;
+  instructions: string;
+  reflection: string;
+  notes: string;
+};
+
+type LessonEditField = Exclude<keyof EditingLessonState, 'lesson'>;
+
 type DayDetailTemplatePreview = {
   id: string;
   name: string;
@@ -131,6 +145,10 @@ type DayDetailEntry =
       deleteLabel: string;
       canDelete: true;
       lesson: Lesson;
+      objectives: string[];
+      instructions: string | null;
+      reflection: string | null;
+      completionNotes: string | null;
     }
   | {
       kind: 'placeholder';
@@ -200,6 +218,57 @@ function formatTimeRange(startTime: string | undefined | null, endTime: string |
   }
 
   return startLabel || endLabel || '';
+}
+
+function parseObjectivesList(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildPhase(
+  base: LessonPhase | undefined,
+  updates: Partial<LessonPhase>
+): LessonPhase | undefined {
+  const next: Record<string, unknown> = { ...(base ?? {}) };
+
+  for (const [key, rawValue] of Object.entries(updates)) {
+    const typedKey = key as keyof LessonPhase;
+    const value = rawValue as LessonPhase[typeof typedKey];
+
+    if (Array.isArray(value)) {
+      const filtered = value
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item): item is string => item.length > 0);
+
+      if (filtered.length > 0) {
+        next[typedKey as string] = filtered;
+      } else {
+        delete next[typedKey as string];
+      }
+      continue;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        next[typedKey as string] = trimmed;
+      } else {
+        delete next[typedKey as string];
+      }
+      continue;
+    }
+
+    if (value === undefined || value === null) {
+      delete next[typedKey as string];
+      continue;
+    }
+
+    next[typedKey as string] = value as unknown;
+  }
+
+  return Object.keys(next).length > 0 ? (next as LessonPhase) : undefined;
 }
 
 function formatTemplatePhase(phase: LessonPhaseType) {
@@ -543,6 +612,7 @@ export function CalendarWorkspace() {
   const [editingPlaceholder, setEditingPlaceholder] = useState<
     { id: string; startTime: string; endTime: string }
   | null>(null);
+  const [editingLesson, setEditingLesson] = useState<EditingLessonState | null>(null);
   const [pendingUpdateId, setPendingUpdateId] = useState<string | null>(null);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
@@ -847,8 +917,6 @@ export function CalendarWorkspace() {
             : undefined;
         maybeChanges?.unsubscribe?.(handler);
       };
-      hooks.deleting.subscribe(deletingSubscriber);
-      fallbackCleanups.push(() => hooks.deleting.unsubscribe(deletingSubscriber));
     }
 
     const fallbackCleanups: Array<() => void> = [];
@@ -1399,6 +1467,14 @@ export function CalendarWorkspace() {
         : group
         ? 'Unassigned level'
         : null;
+      const objectives = [
+        ...(lesson.preActivity?.objectives ?? []),
+        ...(lesson.whileActivity?.objectives ?? []),
+        ...(lesson.postActivity?.objectives ?? []),
+      ];
+      const instructions = lesson.whileActivity?.instructions ?? null;
+      const reflection = lesson.postActivity?.reflection ?? null;
+      const completionNotes = lesson.completionNotes ?? null;
 
       entries.push({
         kind: 'lesson',
@@ -1413,6 +1489,10 @@ export function CalendarWorkspace() {
         deleteLabel: 'Delete lesson',
         canDelete: true,
         lesson,
+        objectives,
+        instructions,
+        reflection,
+        completionNotes,
       });
     }
 
@@ -1550,7 +1630,9 @@ export function CalendarWorkspace() {
   useEffect(() => {
     if (!activeDayDetails) {
       setEditingPlaceholder(null);
+      setEditingLesson(null);
       setPendingUpdateId(null);
+      setDayActionError(null);
     }
   }, [activeDayDetails]);
 
@@ -1755,11 +1837,33 @@ export function CalendarWorkspace() {
       startTime: entry.slot.startTime ?? '',
       endTime: entry.slot.endTime ?? '',
     });
+    setEditingLesson(null);
+    setDayActionError(null);
+  }, []);
+
+  const startEditingLesson = useCallback((entry: Extract<DayDetailEntry, { kind: 'lesson' }>) => {
+    const { lesson } = entry;
+    setEditingPlaceholder(null);
+    setEditingLesson({
+      lesson,
+      status: lesson.status,
+      startTime: lesson.startTime ?? '',
+      endTime: lesson.endTime ?? '',
+      objectives: (lesson.preActivity?.objectives ?? []).join('\n'),
+      instructions: lesson.whileActivity?.instructions ?? '',
+      reflection: lesson.postActivity?.reflection ?? '',
+      notes: lesson.completionNotes ?? '',
+    });
     setDayActionError(null);
   }, []);
 
   const cancelPlaceholderEdit = useCallback(() => {
     setEditingPlaceholder(null);
+  }, []);
+
+  const cancelLessonEdit = useCallback(() => {
+    setEditingLesson(null);
+    setDayActionError(null);
   }, []);
 
   const handlePlaceholderFieldChange = useCallback(
@@ -1810,6 +1914,74 @@ export function CalendarWorkspace() {
       }
     },
     [editingPlaceholder]
+  );
+
+  const handleLessonFieldChange = useCallback(
+    <K extends LessonEditField>(field: K, value: EditingLessonState[K]) => {
+      setEditingLesson((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const handleSaveLessonEdit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+
+      if (!editingLesson) {
+        return;
+      }
+
+      const { lesson, startTime, endTime, status, objectives, instructions, reflection, notes } = editingLesson;
+
+      if (!startTime || !endTime) {
+        setDayActionError('Start and end times are required to update this lesson.');
+        return;
+      }
+
+      const startMinutes = parseTimeToMinutes(startTime);
+      const endMinutes = parseTimeToMinutes(endTime);
+
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
+        setDayActionError('End time must be after the start time.');
+        return;
+      }
+
+      const objectiveList = parseObjectivesList(objectives);
+      const trimmedInstructions = instructions.trim();
+      const trimmedReflection = reflection.trim();
+      const trimmedNotes = notes.trim();
+
+      const preActivity = buildPhase(lesson.preActivity, { objectives: objectiveList });
+      const whileActivity = buildPhase(lesson.whileActivity, { instructions: trimmedInstructions });
+      const postActivity = buildPhase(lesson.postActivity, { reflection: trimmedReflection });
+
+      try {
+        setPendingUpdateId(lesson.id);
+        setDayActionError(null);
+        await DataStore.update('lessons', lesson.id, {
+          startTime,
+          endTime,
+          status,
+          preActivity,
+          whileActivity,
+          postActivity,
+          completionNotes: trimmedNotes ? trimmedNotes : undefined,
+        });
+        setEditingLesson(null);
+      } catch (error) {
+        console.error('Failed to update lesson', error);
+        setDayActionError('Unable to update this lesson. Please try again.');
+      } finally {
+        setPendingUpdateId(null);
+      }
+    },
+    [editingLesson]
   );
 
   const handleEventDidMount = useCallback(
@@ -2249,6 +2421,8 @@ export function CalendarWorkspace() {
                       activeDayDetails.initialEventId === entry.id;
                     const isEditingPlaceholder =
                       entry.kind === 'placeholder' && editingPlaceholder?.id === entry.id;
+                    const isEditingLesson =
+                      entry.kind === 'lesson' && editingLesson?.lesson.id === entry.id;
                     return (
                       <li key={`${entry.kind}_${entry.id}`}>
                         <article
@@ -2291,6 +2465,173 @@ export function CalendarWorkspace() {
                                     </span>
                                   ) : null}
                                 </div>
+                                {entry.kind === 'lesson' && !isEditingLesson ? (
+                                  <div className="space-y-3">
+                                    {entry.objectives.length ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Objectives
+                                        </p>
+                                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+                                          {entry.objectives.map((objective, index) => (
+                                            <li key={`${entry.id}_objective_${index}`}>{objective}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                    {entry.instructions ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          During class
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.instructions}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {entry.reflection ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Reflection & wrap-up
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.reflection}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {entry.completionNotes ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Notes
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.completionNotes}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {!entry.objectives.length &&
+                                    !entry.instructions &&
+                                    !entry.reflection &&
+                                    !entry.completionNotes ? (
+                                      <div className="rounded-2xl border border-dashed border-white/15 bg-slate-900/40 p-4 text-sm text-slate-400">
+                                        No lesson content captured yet.
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {entry.kind === 'lesson' && isEditingLesson ? (
+                                  <form
+                                    className="space-y-4 rounded-2xl border border-white/10 bg-slate-900/60 p-4"
+                                    onSubmit={handleSaveLessonEdit}
+                                  >
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>Start time</span>
+                                        <input
+                                          type="time"
+                                          value={editingLesson?.startTime ?? ''}
+                                          onChange={(event) =>
+                                            handleLessonFieldChange('startTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>End time</span>
+                                        <input
+                                          type="time"
+                                          value={editingLesson?.endTime ?? ''}
+                                          onChange={(event) =>
+                                            handleLessonFieldChange('endTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>Status</span>
+                                        <select
+                                          value={editingLesson?.status ?? 'planned'}
+                                          onChange={(event) =>
+                                            handleLessonFieldChange('status', event.target.value as LessonStatus)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        >
+                                          {LESSON_STATUS_OPTIONS.map((option) => (
+                                            <option key={option.id} value={option.id}>
+                                              {option.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                    </div>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Objectives</span>
+                                      <textarea
+                                        value={editingLesson?.objectives ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('objectives', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="List objectives separated by new lines or commas"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>During class</span>
+                                      <textarea
+                                        value={editingLesson?.instructions ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('instructions', event.target.value)
+                                        }
+                                        rows={4}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Outline the main activities for this session"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Reflection & wrap-up</span>
+                                      <textarea
+                                        value={editingLesson?.reflection ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('reflection', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Capture closure prompts or homework reminders"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Notes</span>
+                                      <textarea
+                                        value={editingLesson?.notes ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('notes', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Record progress updates or follow-ups"
+                                      />
+                                    </label>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="submit"
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent transition hover:border-accent/60 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                        disabled={pendingUpdateId === entry.id}
+                                      >
+                                        {pendingUpdateId === entry.id ? 'Saving…' : 'Save lesson'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelLessonEdit}
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </form>
+                                ) : null}
                                 {entry.kind === 'placeholder' && entry.relatedLesson ? (
                                   <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-300">
                                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -2381,6 +2722,21 @@ export function CalendarWorkspace() {
                               </div>
                             </div>
                             <div className="flex items-center gap-2 md:flex-col md:items-end md:justify-center">
+                              {entry.kind === 'lesson' && !isEditingLesson ? (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingLesson(entry)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/50 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
+                                >
+                                  Edit lesson
+                                </button>
+                              ) : null}
+                              {entry.kind === 'lesson' && isEditingLesson ? (
+                                <span className="text-xs font-semibold uppercase tracking-wide text-accent/80">
+                                  Editing…
+                                </span>
+                              ) : null}
                               {entry.kind === 'placeholder' && !isEditingPlaceholder ? (
                                 <button
                                   type="button"
@@ -2389,6 +2745,15 @@ export function CalendarWorkspace() {
                                   disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
                                 >
                                   Edit session
+                                </button>
+                              ) : null}
+                              {entry.kind === 'lesson' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace(entry.lesson.id)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Open workspace
                                 </button>
                               ) : null}
                               {entry.kind === 'placeholder' && entry.relatedLesson ? (

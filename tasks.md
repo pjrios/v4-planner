@@ -15,6 +15,8 @@
 - [x] Generate groups automatically (A/B/C) with edit/remove UI.
 - [x] Develop schedule builder: weekly grid, add session, conflict validation.
 - [x] Persist schedules and recompute cached placeholder slots.
+- [ ] Surface multi-trimester recurrence previews within the schedule builder (holiday-aware).
+- [ ] Provide tooling to review and edit holiday-shifted recurrence exceptions.
 
 ## Calendar Experience
 - [x] Integrate FullCalendar with month/week/day views and navigation controls.

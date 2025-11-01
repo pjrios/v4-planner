@@ -14,7 +14,7 @@ import type {
 } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore, db } from '../../data/db';
-import { getExpectedSlotsForRange } from '../../data/placeholders';
+import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
   Holiday,
@@ -651,7 +651,7 @@ export function CalendarWorkspace() {
         void loadStaticCollections();
       }
 
-      if (shouldRefreshRange) {
+      if (shouldReloadStatic || shouldRefreshRange) {
         lastPrefetchedRange.current = null;
         latestRequestedRange.current = null;
         const range = currentVisibleRange.current;
@@ -661,32 +661,91 @@ export function CalendarWorkspace() {
       }
     };
 
-    const changeEventSource = (db.on as unknown as {
-      changes?: {
-        subscribe?: (listener: typeof handler) => void;
-        unsubscribe?: (listener: typeof handler) => void;
-      };
-    }).changes;
+    const rawOn = db.on as unknown;
 
-    if (changeEventSource?.subscribe) {
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
       changeEventSource.subscribe(handler);
       return () => {
         changeEventSource.unsubscribe?.(handler);
       };
     }
 
-    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
-      changes?: { unsubscribe?: (listener: typeof handler) => void };
-    };
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
 
-    if (typeof directOn === 'function') {
-      directOn('changes', handler);
       return () => {
-        directOn.changes?.unsubscribe?.(handler);
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
       };
     }
 
-    return () => undefined;
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['groups', db.groups.hook],
+      ['levels', db.levels.hook],
+      ['topics', db.topics.hook],
+      ['schedules', db.schedules.hook],
+      ['holidays', db.holidays.hook],
+      ['placeholderSlots', db.placeholderSlots.hook],
+      ['lessons', db.lessons.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        if (!hook || typeof hook.subscribe !== 'function') {
+          return;
+        }
+
+        hook.subscribe(subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            hook.unsubscribe?.(subscriber);
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {
@@ -732,34 +791,12 @@ export function CalendarWorkspace() {
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
-    let minStart: Date | null = null;
-    let maxEnd: Date | null = null;
-
-    for (const trimester of calendarData.trimesters) {
-      const start = parseISO(trimester.startDate);
-      const end = parseISO(trimester.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        continue;
-      }
-
-      const normalizedStart = startOfDay(start);
-      const normalizedEnd = startOfDay(end);
-
-      if (!minStart || normalizedStart < minStart) {
-        minStart = normalizedStart;
-      }
-
-      if (!maxEnd || normalizedEnd > maxEnd) {
-        maxEnd = normalizedEnd;
-      }
-    }
-
-    if (!minStart || !maxEnd || minStart > maxEnd) {
+    const span = getActiveTrimesterSpan(calendarData.trimesters);
+    if (!span) {
       return null;
     }
 
-    return { start: minStart, end: maxEnd };
+    return { start: span.start, end: span.end };
   }, [calendarData.trimesters]);
 
   const expectedScheduleSlots = useMemo(() => {

@@ -14,7 +14,7 @@ import type {
 } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore, db } from '../../data/db';
-import { getExpectedSlotsForRange } from '../../data/placeholders';
+import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
   Holiday,
@@ -425,6 +425,8 @@ export function CalendarWorkspace() {
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
+  const shouldAutoFocusEarliest = useRef(true);
+  const pendingAutoFocusDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
     new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
@@ -547,38 +549,58 @@ export function CalendarWorkspace() {
     []
   );
 
+  const markManualNavigation = useCallback(() => {
+    shouldAutoFocusEarliest.current = false;
+    pendingAutoFocusDate.current = null;
+  }, []);
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
+
+      if (pendingAutoFocusDate.current) {
+        const pendingDate = parseISO(pendingAutoFocusDate.current);
+        if (isValid(pendingDate) && pendingDate >= arg.start && pendingDate <= arg.end) {
+          pendingAutoFocusDate.current = null;
+        }
+      }
+
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
   );
 
   const handlePrev = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().prev();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleNext = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().next();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleToday = useCallback(() => {
+    markManualNavigation();
     const api = calendarRef.current?.getApi();
     api?.today();
-  }, []);
+  }, [markManualNavigation]);
 
-  const handleViewChange = useCallback((view: CalendarViewType) => {
-    const api = calendarRef.current?.getApi();
-    if (!api || api.view.type === view) {
-      return;
-    }
+  const handleViewChange = useCallback(
+    (view: CalendarViewType) => {
+      const api = calendarRef.current?.getApi();
+      if (!api || api.view.type === view) {
+        return;
+      }
 
-    setActiveView(view);
-    api.changeView(view);
-  }, []);
+      markManualNavigation();
+      setActiveView(view);
+      api.changeView(view);
+    },
+    [markManualNavigation]
+  );
 
   const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedTrimesterId(event.target.value);
@@ -651,7 +673,7 @@ export function CalendarWorkspace() {
         void loadStaticCollections();
       }
 
-      if (shouldRefreshRange) {
+      if (shouldReloadStatic || shouldRefreshRange) {
         lastPrefetchedRange.current = null;
         latestRequestedRange.current = null;
         const range = currentVisibleRange.current;
@@ -661,32 +683,95 @@ export function CalendarWorkspace() {
       }
     };
 
-    const changeEventSource = (db.on as unknown as {
-      changes?: {
-        subscribe?: (listener: typeof handler) => void;
-        unsubscribe?: (listener: typeof handler) => void;
-      };
-    }).changes;
+    const rawOn = db.on as unknown;
 
-    if (changeEventSource?.subscribe) {
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
       changeEventSource.subscribe(handler);
       return () => {
         changeEventSource.unsubscribe?.(handler);
       };
     }
 
-    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
-      changes?: { unsubscribe?: (listener: typeof handler) => void };
-    };
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
 
-    if (typeof directOn === 'function') {
-      directOn('changes', handler);
       return () => {
-        directOn.changes?.unsubscribe?.(handler);
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
       };
     }
 
-    return () => undefined;
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['groups', db.groups.hook],
+      ['levels', db.levels.hook],
+      ['topics', db.topics.hook],
+      ['schedules', db.schedules.hook],
+      ['holidays', db.holidays.hook],
+      ['placeholderSlots', db.placeholderSlots.hook],
+      ['lessons', db.lessons.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {
@@ -729,37 +814,17 @@ export function CalendarWorkspace() {
 
   useEffect(() => {
     lastAutoFocusedDate.current = null;
+    shouldAutoFocusEarliest.current = true;
+    pendingAutoFocusDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
-    let minStart: Date | null = null;
-    let maxEnd: Date | null = null;
-
-    for (const trimester of calendarData.trimesters) {
-      const start = parseISO(trimester.startDate);
-      const end = parseISO(trimester.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        continue;
-      }
-
-      const normalizedStart = startOfDay(start);
-      const normalizedEnd = startOfDay(end);
-
-      if (!minStart || normalizedStart < minStart) {
-        minStart = normalizedStart;
-      }
-
-      if (!maxEnd || normalizedEnd > maxEnd) {
-        maxEnd = normalizedEnd;
-      }
-    }
-
-    if (!minStart || !maxEnd || minStart > maxEnd) {
+    const span = getActiveTrimesterSpan(calendarData.trimesters);
+    if (!span) {
       return null;
     }
 
-    return { start: minStart, end: maxEnd };
+    return { start: span.start, end: span.end };
   }, [calendarData.trimesters]);
 
   const expectedScheduleSlots = useMemo(() => {
@@ -883,6 +948,9 @@ export function CalendarWorkspace() {
     }, null);
 
     if (!earliestDate || earliestDate === lastAutoFocusedDate.current) {
+      if (!shouldAutoFocusEarliest.current && earliestDate) {
+        lastAutoFocusedDate.current = earliestDate;
+      }
       return;
     }
 
@@ -903,9 +971,16 @@ export function CalendarWorkspace() {
       return;
     }
 
+    if (!shouldAutoFocusEarliest.current) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    pendingAutoFocusDate.current = earliestDate;
     api.gotoDate(target);
     void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
+    shouldAutoFocusEarliest.current = false;
   }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {

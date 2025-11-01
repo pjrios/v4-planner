@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { addDays, format, isValid, parseISO } from 'date-fns';
+import { addDays, format, getISODay, isValid, parseISO, startOfDay } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -164,6 +164,128 @@ function hexToRgba(hexColor: string | undefined | null, alpha: number) {
   }
 
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+type HolidayWindow = {
+  id: string;
+  start: Date;
+  end: Date;
+  appliesToAll: boolean;
+  targets: Set<string>;
+};
+
+function normalizeTarget(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function mapHolidayToWindow(holiday: Holiday): HolidayWindow | null {
+  const start = parseISO(holiday.startDate);
+  const end = parseISO(holiday.endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    return null;
+  }
+
+  const targets = new Set(holiday.affectsGroups.map(normalizeTarget));
+
+  return {
+    id: holiday.id,
+    start: startOfDay(start),
+    end: startOfDay(end),
+    appliesToAll: targets.has('all'),
+    targets,
+  };
+}
+
+function holidayCoversGroup(window: HolidayWindow, group: Group) {
+  if (window.appliesToAll) {
+    return true;
+  }
+
+  const comparisons = [group.id, group.displayName, group.levelId].map(normalizeTarget);
+  return comparisons.some((value) => window.targets.has(value));
+}
+
+function dateFallsInside(date: Date, window: HolidayWindow) {
+  return date >= window.start && date <= window.end;
+}
+
+function computeNextOccurrenceOnOrAfter(start: Date, desiredIsoDay: number) {
+  const isoDay = getISODay(start);
+  const offset = (desiredIsoDay - isoDay + 7) % 7;
+  return startOfDay(addDays(start, offset));
+}
+
+function findEarliestScheduledDate(
+  schedules: Schedule[],
+  trimesters: Trimester[],
+  groups: Group[],
+  holidays: Holiday[]
+) {
+  if (!schedules.length || !trimesters.length || !groups.length) {
+    return null as string | null;
+  }
+
+  const trimesterMap = new Map(trimesters.map((trimester) => [trimester.id, trimester]));
+  const groupMap = new Map(groups.map((group) => [group.id, group]));
+  const holidayWindows = holidays
+    .map(mapHolidayToWindow)
+    .filter((window): window is HolidayWindow => window !== null);
+
+  const today = startOfDay(new Date());
+  let best: string | null = null;
+
+  for (const schedule of schedules) {
+    const trimester = trimesterMap.get(schedule.trimesterId);
+    const group = groupMap.get(schedule.groupId);
+
+    if (!trimester || !group) {
+      continue;
+    }
+
+    const trimesterStart = parseISO(trimester.startDate);
+    const trimesterEnd = parseISO(trimester.endDate);
+
+    if (
+      Number.isNaN(trimesterStart.getTime()) ||
+      Number.isNaN(trimesterEnd.getTime()) ||
+      trimesterStart > trimesterEnd
+    ) {
+      continue;
+    }
+
+    const searchStart = startOfDay(trimesterStart > today ? trimesterStart : today);
+    const searchEnd = startOfDay(trimesterEnd);
+
+    if (searchStart > searchEnd) {
+      continue;
+    }
+
+    const relevantHolidays = holidayWindows.filter((window) => holidayCoversGroup(window, group));
+
+    for (const session of schedule.sessions) {
+      if (!session || typeof session.dayOfWeek !== 'number') {
+        continue;
+      }
+
+      let occurrence = computeNextOccurrenceOnOrAfter(searchStart, session.dayOfWeek);
+
+      while (occurrence <= searchEnd) {
+        const blocked = relevantHolidays.some((window) => dateFallsInside(occurrence, window));
+        if (!blocked) {
+          const isoDate = format(occurrence, ISO_DATE_FORMAT);
+          if (!best || isoDate < best) {
+            best = isoDate;
+          }
+          break;
+        }
+
+        occurrence = addDays(occurrence, 7);
+      }
+    }
+  }
+
+  return best;
 }
 
 function titleCaseStatus(status: LessonStatus) {
@@ -586,8 +708,24 @@ export function CalendarWorkspace() {
 
   const lessons = calendarData.lessons;
 
+  const earliestScheduledSlotDate = useMemo(
+    () =>
+      findEarliestScheduledDate(
+        calendarData.schedules,
+        calendarData.trimesters,
+        calendarData.groups,
+        calendarData.holidays
+      ),
+    [
+      calendarData.groups,
+      calendarData.holidays,
+      calendarData.schedules,
+      calendarData.trimesters,
+    ]
+  );
+
   useEffect(() => {
-    if (!lessons.length && !availablePlaceholders.length) {
+    if (!lessons.length && !availablePlaceholders.length && !earliestScheduledSlotDate) {
       return;
     }
 
@@ -601,6 +739,10 @@ export function CalendarWorkspace() {
       if (slot.date) {
         allDates.push(slot.date);
       }
+    }
+
+    if (earliestScheduledSlotDate) {
+      allDates.push(earliestScheduledSlotDate);
     }
 
     if (allDates.length === 0) {
@@ -636,8 +778,9 @@ export function CalendarWorkspace() {
     }
 
     api.gotoDate(target);
+    void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
-  }, [availablePlaceholders, lessons]);
+  }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {
     if (activeView === 'dayGridMonth') {

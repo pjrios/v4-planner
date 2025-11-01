@@ -22,7 +22,7 @@
 - [x] Add filters for trimester, level, group, lesson status.
 - [x] Implement calendar range listener to prefetch relevant data.
 - [x] Design condensed month view rendering (chips, overflow count).
-- [ ] Create day/week tooltips and keyboard shortcuts.
+- [x] Create day/week tooltips and keyboard shortcuts.
 
 ## Lesson Planning
 - [ ] Build Lesson drawer/modal shell with tab navigation.

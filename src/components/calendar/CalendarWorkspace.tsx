@@ -5,7 +5,13 @@ import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
-import type { DatesSetArg, EventContentArg, EventInput, MoreLinkContentArg } from '@fullcalendar/core';
+import type {
+  DatesSetArg,
+  EventContentArg,
+  EventInput,
+  EventMountArg,
+  MoreLinkContentArg,
+} from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore } from '../../data/db';
 import type {
@@ -55,6 +61,21 @@ type CalendarDataState = {
 
 const ISO_DATE_FORMAT = 'yyyy-MM-dd';
 const RANGE_PADDING_DAYS = 7;
+
+type TooltipPlacement = 'top' | 'bottom';
+
+type TooltipState = {
+  eventId: string;
+  kind: 'lesson' | 'placeholder';
+  title: string;
+  subtitle: string;
+  timeLabel: string | null;
+  statusLabel: string | null;
+  accentColor: string;
+  top: number;
+  left: number;
+  placement: TooltipPlacement;
+};
 
 function toDateTime(date: string, time: string) {
   if (!time) {
@@ -264,6 +285,12 @@ export function CalendarWorkspace() {
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
+  const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
+  const tooltipHandlersRef = useRef(
+    new WeakMap<HTMLElement, { show: () => void; hide: () => void }>()
+  );
+  const tooltipSourceRef = useRef<HTMLElement | null>(null);
+  const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
 
   const loadStaticCollections = useCallback(async () => {
     setIsBaseLoading(true);
@@ -418,6 +445,23 @@ export function CalendarWorkspace() {
     });
   }, []);
 
+  const clearTooltip = useCallback(() => {
+    const element = tooltipSourceRef.current;
+    if (element) {
+      const previous = element.dataset.calendarTooltipPrev ?? '';
+      if (previous) {
+        element.setAttribute('aria-describedby', previous);
+      } else {
+        element.removeAttribute('aria-describedby');
+      }
+
+      delete element.dataset.calendarTooltipPrev;
+      tooltipSourceRef.current = null;
+    }
+
+    setActiveTooltip(null);
+  }, []);
+
   useEffect(() => {
     void loadStaticCollections();
   }, [loadStaticCollections]);
@@ -518,6 +562,26 @@ export function CalendarWorkspace() {
     lastAutoFocusedDate.current = earliestDate;
   }, [calendarData]);
 
+  useEffect(() => {
+    if (activeView === 'dayGridMonth') {
+      clearTooltip();
+    }
+  }, [activeView, clearTooltip]);
+
+  useEffect(() => {
+    const handleDismiss = () => {
+      clearTooltip();
+    };
+
+    window.addEventListener('resize', handleDismiss);
+    window.addEventListener('scroll', handleDismiss, true);
+
+    return () => {
+      window.removeEventListener('resize', handleDismiss);
+      window.removeEventListener('scroll', handleDismiss, true);
+    };
+  }, [clearTooltip]);
+
   const trimesterOptions = useMemo(
     () => [
       { id: 'all', label: 'All trimesters' },
@@ -551,6 +615,75 @@ export function CalendarWorkspace() {
       ...groupsForLevel.map((group) => ({ id: group.id, label: group.displayName })),
     ];
   }, [calendarData.groups, selectedLevelId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tagName = target.tagName;
+        const role = target.getAttribute('role');
+        if (
+          target.isContentEditable ||
+          tagName === 'INPUT' ||
+          tagName === 'TEXTAREA' ||
+          tagName === 'SELECT' ||
+          role === 'textbox'
+        ) {
+          return;
+        }
+      }
+
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      if (!event.shiftKey && event.key === '[') {
+        event.preventDefault();
+        handlePrev();
+        return;
+      }
+
+      if (!event.shiftKey && event.key === ']') {
+        event.preventDefault();
+        handleNext();
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 't') {
+        event.preventDefault();
+        handleToday();
+        return;
+      }
+
+      if (key === 'm') {
+        event.preventDefault();
+        handleViewChange('dayGridMonth');
+        return;
+      }
+
+      if (key === 'w') {
+        event.preventDefault();
+        handleViewChange('timeGridWeek');
+        return;
+      }
+
+      if (key === 'd') {
+        event.preventDefault();
+        handleViewChange('timeGridDay');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleNext, handlePrev, handleToday, handleViewChange]);
 
   const filteredEvents = useMemo<EventInput[]>(() => {
     const groupsById = new Map(calendarData.groups.map((group) => [group.id, group]));
@@ -638,6 +771,17 @@ export function CalendarWorkspace() {
     selectedTrimesterId,
   ]);
 
+  useEffect(() => {
+    if (!activeTooltip) {
+      return;
+    }
+
+    const stillVisible = filteredEvents.some((event) => event.id === activeTooltip.eventId);
+    if (!stillVisible) {
+      clearTooltip();
+    }
+  }, [activeTooltip, filteredEvents, clearTooltip]);
+
   const hasAnyData = calendarData.lessons.length > 0 || calendarData.placeholders.length > 0;
   const loadError = baseError ?? rangeError;
   const isLoading = (isBaseLoading || isRangeLoading) && loadError === null;
@@ -703,6 +847,129 @@ export function CalendarWorkspace() {
     [activeView]
   );
 
+  const handleEventDidMount = useCallback(
+    (arg: EventMountArg) => {
+      if (activeView === 'dayGridMonth') {
+        return;
+      }
+
+      const { event, el } = arg;
+      const rawKind = event.extendedProps.kind as string | undefined;
+      const kind: 'lesson' | 'placeholder' = rawKind === 'placeholder' ? 'placeholder' : 'lesson';
+      const groupName = (event.extendedProps.groupName as string | undefined) ?? 'Unknown group';
+      const topicName = event.extendedProps.topicName as string | undefined;
+      const statusLabel = (event.extendedProps.statusLabel as string | undefined) ?? null;
+      const startTime = event.extendedProps.startTime as string | undefined;
+      const endTime = event.extendedProps.endTime as string | undefined;
+      const timeLabel = formatTimeRange(startTime, endTime);
+      const accentColor =
+        (event.extendedProps.accentColor as string | undefined) ??
+        event.backgroundColor ??
+        DEFAULT_ACCENT;
+
+      const title =
+        kind === 'lesson'
+          ? topicName ?? 'Untitled lesson'
+          : 'Available placeholder';
+      const subtitle = kind === 'lesson' ? groupName : `${groupName} • Slot`;
+
+      const fallbackParts = [title];
+      if (subtitle) {
+        fallbackParts.push(subtitle);
+      }
+      if (timeLabel) {
+        fallbackParts.push(timeLabel);
+      }
+      if (kind === 'lesson' && statusLabel) {
+        fallbackParts.push(statusLabel);
+      }
+      el.setAttribute('title', fallbackParts.join(' • '));
+
+      const show = () => {
+        const wrapper = calendarWrapperRef.current;
+        if (!wrapper) {
+          return;
+        }
+
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const eventRect = el.getBoundingClientRect();
+        const centerX = eventRect.left - wrapperRect.left + eventRect.width / 2;
+        const preferTop = eventRect.top > window.innerHeight / 2;
+        const placement: TooltipPlacement = preferTop ? 'top' : 'bottom';
+        const referenceTop =
+          placement === 'top'
+            ? eventRect.top - wrapperRect.top
+            : eventRect.bottom - wrapperRect.top;
+
+        const previousSource = tooltipSourceRef.current;
+        if (previousSource && previousSource !== el) {
+          const previousDescriptor = previousSource.dataset.calendarTooltipPrev ?? '';
+          if (previousDescriptor) {
+            previousSource.setAttribute('aria-describedby', previousDescriptor);
+          } else {
+            previousSource.removeAttribute('aria-describedby');
+          }
+          delete previousSource.dataset.calendarTooltipPrev;
+        }
+
+        const existingDescriptor = el.getAttribute('aria-describedby') ?? '';
+        const baseDescriptors = existingDescriptor
+          .split(' ')
+          .map((item) => item.trim())
+          .filter((item) => item && item !== 'calendar-event-tooltip');
+        el.dataset.calendarTooltipPrev = baseDescriptors.join(' ');
+        const nextDescriptor = [...baseDescriptors, 'calendar-event-tooltip'].join(' ').trim();
+        el.setAttribute('aria-describedby', nextDescriptor || 'calendar-event-tooltip');
+        tooltipSourceRef.current = el;
+
+        setActiveTooltip({
+          eventId: event.id,
+          kind,
+          title,
+          subtitle,
+          timeLabel: timeLabel || null,
+          statusLabel: kind === 'lesson' ? statusLabel : null,
+          accentColor,
+          top: referenceTop,
+          left: centerX,
+          placement,
+        });
+      };
+
+      const hide = () => {
+        if (tooltipSourceRef.current === el) {
+          clearTooltip();
+        }
+      };
+
+      el.addEventListener('mouseenter', show);
+      el.addEventListener('mouseleave', hide);
+      el.addEventListener('focus', show);
+      el.addEventListener('blur', hide);
+
+      tooltipHandlersRef.current.set(el, { show, hide });
+    },
+    [activeView, clearTooltip]
+  );
+
+  const handleEventWillUnmount = useCallback(
+    (arg: EventMountArg) => {
+      const handlers = tooltipHandlersRef.current.get(arg.el);
+      if (handlers) {
+        arg.el.removeEventListener('mouseenter', handlers.show);
+        arg.el.removeEventListener('mouseleave', handlers.hide);
+        arg.el.removeEventListener('focus', handlers.show);
+        arg.el.removeEventListener('blur', handlers.hide);
+        tooltipHandlersRef.current.delete(arg.el);
+      }
+
+      if (tooltipSourceRef.current === arg.el) {
+        clearTooltip();
+      }
+    },
+    [clearTooltip]
+  );
+
   const moreLinkClassNames = useMemo(() => (activeView === 'dayGridMonth' ? ['fc-more-chip'] : []), [activeView]);
   const dayMaxEventsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
   const dayMaxEventRowsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
@@ -710,6 +977,7 @@ export function CalendarWorkspace() {
   return (
     <section
       aria-labelledby="calendar-workspace-heading"
+      aria-describedby="calendar-workspace-description calendar-workspace-shortcuts"
       className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8"
     >
       <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -721,7 +989,7 @@ export function CalendarWorkspace() {
             <h2 id="calendar-workspace-heading" className="text-xl font-semibold text-white">
               Calendar workspace
             </h2>
-            <p className="text-sm text-slate-400">
+            <p id="calendar-workspace-description" className="text-sm text-slate-400">
               Explore the agenda across month, week, and day views while we wire schedules and lessons into each slot.
             </p>
           </div>
@@ -777,6 +1045,9 @@ export function CalendarWorkspace() {
           </div>
         </div>
       </header>
+      <p id="calendar-workspace-shortcuts" className="sr-only">
+        Keyboard shortcuts: press T for today, [ and ] to move between periods, and M, W, or D to switch views.
+      </p>
       <div className="rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
@@ -863,7 +1134,7 @@ export function CalendarWorkspace() {
             : 'No calendar events to show yet. Configure schedules or lessons to populate this view.'}
         </p>
       ) : null}
-      <div className="rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
+      <div ref={calendarWrapperRef} className="relative rounded-2xl bg-surface/60 p-4 ring-1 ring-white/10">
         <FullCalendar
           ref={calendarRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -885,7 +1156,53 @@ export function CalendarWorkspace() {
           eventContent={renderEventContent}
           moreLinkContent={renderMoreLinkContent}
           moreLinkClassNames={moreLinkClassNames}
+          eventDidMount={handleEventDidMount}
+          eventWillUnmount={handleEventWillUnmount}
         />
+        {activeTooltip ? (
+          <div
+            id="calendar-event-tooltip"
+            role="tooltip"
+            className={`calendar-tooltip ${
+              activeTooltip.kind === 'lesson'
+                ? 'calendar-tooltip-lesson'
+                : 'calendar-tooltip-placeholder'
+            }`}
+            data-placement={activeTooltip.placement}
+            style={{
+              top: activeTooltip.top,
+              left: activeTooltip.left,
+              transform:
+                activeTooltip.placement === 'top'
+                  ? 'translate(-50%, calc(-100% - 12px))'
+                  : 'translate(-50%, 12px)',
+            }}
+          >
+            <span
+              className="calendar-tooltip-indicator"
+              style={{ backgroundColor: activeTooltip.accentColor }}
+            />
+            <div className="calendar-tooltip-body">
+              <p className="calendar-tooltip-title">{activeTooltip.title}</p>
+              <p className="calendar-tooltip-subtitle">{activeTooltip.subtitle}</p>
+              <div className="calendar-tooltip-meta">
+                {activeTooltip.timeLabel ? (
+                  <span>{activeTooltip.timeLabel}</span>
+                ) : null}
+                {activeTooltip.statusLabel ? (
+                  <span>{activeTooltip.statusLabel}</span>
+                ) : null}
+              </div>
+            </div>
+            <span
+              className={`calendar-tooltip-arrow ${
+                activeTooltip.placement === 'top'
+                  ? 'calendar-tooltip-arrow-bottom'
+                  : 'calendar-tooltip-arrow-top'
+              }`}
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );

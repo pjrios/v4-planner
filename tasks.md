@@ -26,11 +26,11 @@
 
 ## Lesson Planning
 - [x] Build Lesson drawer/modal shell with tab navigation.
-- [ ] Implement structured fields for pre/while/post activities and validations.
-- [ ] Add resource and rubric selectors with attachment metadata.
-- [ ] Enable autosave (debounce) with “Last saved” indicator.
-- [ ] Create activity templates library and insertion flow.
-- [ ] Implement copy-to-level wizard with duration match check.
+- [x] Implement structured fields for pre/while/post activities and validations.
+- [x] Add resource and rubric selectors with attachment metadata.
+- [x] Enable autosave (debounce) with “Last saved” indicator.
+- [x] Create activity templates library and insertion flow.
+- [x] Implement copy-to-level wizard with duration match check.
 - [ ] Handle linked lessons (edit all/this/unlink options).
 - [ ] Add completion status workflow and notes.
 

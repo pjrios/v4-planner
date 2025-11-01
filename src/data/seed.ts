@@ -298,6 +298,14 @@ const lessons: Lesson[] = [
       homework: 'Review safety checklist.',
     },
     resourceIds: ['resource_robotics_slide'],
+    resourceAttachments: [
+      {
+        resourceId: 'resource_robotics_slide',
+        usage: 'while',
+        required: true,
+        notes: 'Projector slides guiding the starter bot build.',
+      },
+    ],
     rubricId: 'rubric_robotics_intro',
     linkedLessonIds: ['lesson_5b_rob_1', 'lesson_5c_rob_1'],
   },
@@ -325,6 +333,14 @@ const lessons: Lesson[] = [
       reflection: 'Document adjustments to share with other sections.',
     },
     resourceIds: ['resource_robotics_slide'],
+    resourceAttachments: [
+      {
+        resourceId: 'resource_robotics_slide',
+        usage: 'while',
+        required: true,
+        notes: 'Slide deck to review wiring steps.',
+      },
+    ],
     rubricId: 'rubric_robotics_intro',
     linkedLessonIds: ['lesson_5a_rob_1', 'lesson_5c_rob_1'],
   },
@@ -351,6 +367,14 @@ const lessons: Lesson[] = [
       reflection: 'Students record video recap on tablets.',
     },
     resourceIds: ['resource_robotics_slide'],
+    resourceAttachments: [
+      {
+        resourceId: 'resource_robotics_slide',
+        usage: 'while',
+        required: true,
+        notes: 'Slides projected while troubleshooting stations rotate.',
+      },
+    ],
     rubricId: 'rubric_robotics_intro',
     linkedLessonIds: ['lesson_5a_rob_1', 'lesson_5b_rob_1'],
   },
@@ -377,6 +401,14 @@ const lessons: Lesson[] = [
       homework: 'Interview a family member about online safety.',
     },
     resourceIds: ['resource_digcit_skit'],
+    resourceAttachments: [
+      {
+        resourceId: 'resource_digcit_skit',
+        usage: 'while',
+        required: false,
+        notes: 'Printed scripts handed to each group.',
+      },
+    ],
     rubricId: 'rubric_digital_ethics',
     linkedLessonIds: ['lesson_6b_digcit_1'],
   },
@@ -402,6 +434,14 @@ const lessons: Lesson[] = [
       reflection: 'Students share personal commitments for responsible tech use.',
     },
     resourceIds: ['resource_digcit_skit'],
+    resourceAttachments: [
+      {
+        resourceId: 'resource_digcit_skit',
+        usage: 'while',
+        required: false,
+        notes: 'Scenario cards for role play prompts.',
+      },
+    ],
     rubricId: 'rubric_digital_ethics',
     linkedLessonIds: ['lesson_6a_digcit_1'],
   },

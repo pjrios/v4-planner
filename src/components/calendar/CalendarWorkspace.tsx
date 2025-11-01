@@ -14,7 +14,7 @@ import type {
 } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore, db } from '../../data/db';
-import { getExpectedSlotsForRange } from '../../data/placeholders';
+import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
   Holiday,
@@ -651,7 +651,7 @@ export function CalendarWorkspace() {
         void loadStaticCollections();
       }
 
-      if (shouldRefreshRange) {
+      if (shouldReloadStatic || shouldRefreshRange) {
         lastPrefetchedRange.current = null;
         latestRequestedRange.current = null;
         const range = currentVisibleRange.current;
@@ -732,34 +732,12 @@ export function CalendarWorkspace() {
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
-    let minStart: Date | null = null;
-    let maxEnd: Date | null = null;
-
-    for (const trimester of calendarData.trimesters) {
-      const start = parseISO(trimester.startDate);
-      const end = parseISO(trimester.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        continue;
-      }
-
-      const normalizedStart = startOfDay(start);
-      const normalizedEnd = startOfDay(end);
-
-      if (!minStart || normalizedStart < minStart) {
-        minStart = normalizedStart;
-      }
-
-      if (!maxEnd || normalizedEnd > maxEnd) {
-        maxEnd = normalizedEnd;
-      }
-    }
-
-    if (!minStart || !maxEnd || minStart > maxEnd) {
+    const span = getActiveTrimesterSpan(calendarData.trimesters);
+    if (!span) {
       return null;
     }
 
-    return { start: minStart, end: maxEnd };
+    return { start: span.start, end: span.end };
   }, [calendarData.trimesters]);
 
   const expectedScheduleSlots = useMemo(() => {

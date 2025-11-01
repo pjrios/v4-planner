@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from 'react';
 import { addDays, format, getISODay, isValid, parseISO, startOfDay } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
@@ -19,10 +27,12 @@ import { CalendarDays, ChevronLeft, ChevronRight, Clock, Trash2, X } from 'lucid
 import { DataStore, db } from '../../data/db';
 import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
+  ActivityTemplate,
   Group,
   Holiday,
   Lesson,
   LessonStatus,
+  LessonPhaseType,
   Level,
   PlaceholderSlot,
   Schedule,
@@ -65,6 +75,7 @@ type CalendarDataState = {
   lessons: Lesson[];
   placeholders: PlaceholderSlot[];
   topics: Topic[];
+  templates: ActivityTemplate[];
 };
 
 const ISO_DATE_FORMAT = 'yyyy-MM-dd';
@@ -88,6 +99,22 @@ type TooltipState = {
 type ActiveDayDetailsState = {
   date: string;
   initialEventId?: string | null;
+};
+
+type DayDetailLessonPreview = {
+  id: string;
+  title: string;
+  subtitle: string;
+  timeLabel: string;
+  statusLabel: string | null;
+  accentColor: string;
+};
+
+type DayDetailTemplatePreview = {
+  id: string;
+  name: string;
+  phaseLabel: string;
+  summary: string | null;
 };
 
 type DayDetailEntry =
@@ -119,6 +146,8 @@ type DayDetailEntry =
       canDelete: boolean;
       placeholderSource: PlaceholderSlot['source'];
       slot: PlaceholderSlot;
+      relatedLesson: DayDetailLessonPreview | null;
+      templatePreview: DayDetailTemplatePreview | null;
     };
 
 function toDateTime(date: string, time: string) {
@@ -171,6 +200,53 @@ function formatTimeRange(startTime: string | undefined | null, endTime: string |
   }
 
   return startLabel || endLabel || '';
+}
+
+function formatTemplatePhase(phase: LessonPhaseType) {
+  switch (phase) {
+    case 'pre':
+      return 'Pre-activity';
+    case 'while':
+      return 'During lesson';
+    case 'post':
+      return 'Post-activity';
+    default:
+      return phase;
+  }
+}
+
+function summarizeTemplate(template: ActivityTemplate) {
+  const entries = Object.entries(template.fields ?? {});
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const parts = entries.slice(0, 2).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      return `${key}: ${value.slice(0, 3).join(', ')}`;
+    }
+
+    if (value && typeof value === 'object') {
+      return `${key}: …`;
+    }
+
+    return `${key}: ${String(value)}`;
+  });
+
+  return parts.join(' • ');
+}
+
+function parseTimeToMinutes(value: string | undefined | null) {
+  if (!value) {
+    return null;
+  }
+
+  const [hours, minutes] = value.split(':').map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
 }
 
 function hexToRgba(hexColor: string | undefined | null, alpha: number) {
@@ -449,6 +525,7 @@ export function CalendarWorkspace() {
     lessons: [],
     placeholders: [],
     topics: [],
+    templates: [],
   });
   const [selectedTrimesterId, setSelectedTrimesterId] = useState<string>('all');
   const [selectedLevelId, setSelectedLevelId] = useState<string>('all');
@@ -463,6 +540,10 @@ export function CalendarWorkspace() {
   const [activeDayDetails, setActiveDayDetails] = useState<ActiveDayDetailsState | null>(null);
   const [dayActionError, setDayActionError] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [editingPlaceholder, setEditingPlaceholder] = useState<
+    { id: string; startTime: string; endTime: string }
+  | null>(null);
+  const [pendingUpdateId, setPendingUpdateId] = useState<string | null>(null);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
   const nextRangeRequestToken = useRef(0);
@@ -484,13 +565,14 @@ export function CalendarWorkspace() {
     setBaseError(null);
 
     try {
-      const [trimesters, groups, levels, topics, schedules, holidays] = await Promise.all([
+      const [trimesters, groups, levels, topics, schedules, holidays, templates] = await Promise.all([
         DataStore.getAll('trimesters'),
         DataStore.getAll('groups'),
         DataStore.getAll('levels'),
         DataStore.getAll('topics'),
         DataStore.getAll('schedules'),
         DataStore.getAll('holidays'),
+        DataStore.getAll('templates'),
       ]);
 
       setCalendarData((current) => ({
@@ -501,6 +583,7 @@ export function CalendarWorkspace() {
         topics,
         schedules,
         holidays,
+        templates,
       }));
       setBaseError(null);
     } catch (error) {
@@ -514,6 +597,7 @@ export function CalendarWorkspace() {
         topics: [],
         schedules: [],
         holidays: [],
+        templates: [],
       }));
     } finally {
       setIsBaseLoading(false);
@@ -703,6 +787,7 @@ export function CalendarWorkspace() {
           case 'topics':
           case 'schedules':
           case 'holidays':
+          case 'templates':
             shouldReloadStatic = true;
             break;
           case 'placeholderSlots':
@@ -774,6 +859,7 @@ export function CalendarWorkspace() {
       ['topics', db.topics.hook],
       ['schedules', db.schedules.hook],
       ['holidays', db.holidays.hook],
+      ['templates', db.templates.hook],
       ['placeholderSlots', db.placeholderSlots.hook],
       ['lessons', db.lessons.hook],
     ] as const;
@@ -945,6 +1031,36 @@ export function CalendarWorkspace() {
   }, [calendarData.placeholders, expectedScheduleSlots]);
 
   const lessons = calendarData.lessons;
+
+  const lessonsBySlotKey = useMemo(() => {
+    const map = new Map<string, Lesson[]>();
+    for (const lesson of calendarData.lessons) {
+      if (!lesson) continue;
+      const key = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const current = map.get(key);
+      if (current) {
+        current.push(lesson);
+      } else {
+        map.set(key, [lesson]);
+      }
+    }
+    return map;
+  }, [calendarData.lessons]);
+
+  const lessonsByGroupAndDate = useMemo(() => {
+    const map = new Map<string, Lesson[]>();
+    for (const lesson of calendarData.lessons) {
+      if (!lesson) continue;
+      const key = `${lesson.groupId}_${lesson.date}`;
+      const current = map.get(key);
+      if (current) {
+        current.push(lesson);
+      } else {
+        map.set(key, [lesson]);
+      }
+    }
+    return map;
+  }, [calendarData.lessons]);
 
   const earliestScheduledSlotDate = useMemo(
     () =>
@@ -1325,6 +1441,48 @@ export function CalendarWorkspace() {
           ? 'Projected from recurrence'
           : null;
 
+      const slotKey = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      const matchingLessons = lessonsBySlotKey.get(slotKey) ?? [];
+      const groupDayKey = `${slot.groupId}_${slot.date}`;
+      const fallbackLessons = lessonsByGroupAndDate.get(groupDayKey) ?? [];
+      const relatedLessonRaw = matchingLessons[0] ?? fallbackLessons[0] ?? null;
+
+      let relatedLesson: DayDetailLessonPreview | null = null;
+      if (relatedLessonRaw) {
+        const relatedGroup = groupsById.get(relatedLessonRaw.groupId) ?? group;
+        const relatedLevel = relatedGroup ? levelsById.get(relatedGroup.levelId) : level;
+        const relatedTopic = topicsById.get(relatedLessonRaw.topicId);
+        const relatedAccent = relatedTopic?.color ?? relatedLevel?.color ?? accentColor;
+        const relatedTime =
+          formatTimeRange(relatedLessonRaw.startTime, relatedLessonRaw.endTime) || 'Time not set';
+
+        relatedLesson = {
+          id: relatedLessonRaw.id,
+          title: relatedTopic?.name ?? 'Untitled lesson',
+          subtitle: relatedGroup?.displayName ?? 'Unknown group',
+          statusLabel: titleCaseStatus(relatedLessonRaw.status),
+          timeLabel: relatedTime,
+          accentColor: relatedAccent,
+        } satisfies DayDetailLessonPreview;
+      }
+
+      let templatePreview: DayDetailTemplatePreview | null = null;
+      if (!relatedLesson) {
+        const preferredTemplate =
+          calendarData.templates.find((template) => template.phase === 'while') ??
+          calendarData.templates[0] ??
+          null;
+
+        if (preferredTemplate) {
+          templatePreview = {
+            id: preferredTemplate.id,
+            name: preferredTemplate.name,
+            phaseLabel: formatTemplatePhase(preferredTemplate.phase),
+            summary: summarizeTemplate(preferredTemplate),
+          } satisfies DayDetailTemplatePreview;
+        }
+      }
+
       entries.push({
         kind: 'placeholder',
         id: slot.id,
@@ -1342,6 +1500,8 @@ export function CalendarWorkspace() {
         canDelete: slot.source !== 'expected',
         placeholderSource: slot.source,
         slot,
+        relatedLesson,
+        templatePreview,
       });
     }
 
@@ -1362,9 +1522,12 @@ export function CalendarWorkspace() {
     calendarData.lessons,
     groupsById,
     lessonMatchesFilters,
+    lessonsByGroupAndDate,
+    lessonsBySlotKey,
     levelsById,
     placeholderMatchesFilters,
     topicsById,
+    calendarData.templates,
   ]);
 
   useEffect(() => {
@@ -1381,6 +1544,13 @@ export function CalendarWorkspace() {
   useEffect(() => {
     if (activeDayDetails && dayDrawerCloseButtonRef.current) {
       dayDrawerCloseButtonRef.current.focus();
+    }
+  }, [activeDayDetails]);
+
+  useEffect(() => {
+    if (!activeDayDetails) {
+      setEditingPlaceholder(null);
+      setPendingUpdateId(null);
     }
   }, [activeDayDetails]);
 
@@ -1558,6 +1728,88 @@ export function CalendarWorkspace() {
       }
     },
     []
+  );
+
+  const openLessonWorkspace = useCallback(
+    (lessonId?: string) => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('planner:navigate', { detail: { workspace: 'lessons' } })
+      );
+
+      if (lessonId) {
+        window.dispatchEvent(new CustomEvent('planner:openLesson', { detail: { lessonId } }));
+      }
+
+      closeDayDetails();
+    },
+    [closeDayDetails]
+  );
+
+  const startEditingPlaceholder = useCallback((entry: Extract<DayDetailEntry, { kind: 'placeholder' }>) => {
+    setEditingPlaceholder({
+      id: entry.id,
+      startTime: entry.slot.startTime ?? '',
+      endTime: entry.slot.endTime ?? '',
+    });
+    setDayActionError(null);
+  }, []);
+
+  const cancelPlaceholderEdit = useCallback(() => {
+    setEditingPlaceholder(null);
+  }, []);
+
+  const handlePlaceholderFieldChange = useCallback(
+    (field: 'startTime' | 'endTime', value: string) => {
+      setEditingPlaceholder((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const handleSavePlaceholderEdit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!editingPlaceholder) {
+        return;
+      }
+
+      const { id, startTime, endTime } = editingPlaceholder;
+
+      if (!startTime || !endTime) {
+        setDayActionError('Start and end times are required to update this session.');
+        return;
+      }
+
+      const startMinutes = parseTimeToMinutes(startTime);
+      const endMinutes = parseTimeToMinutes(endTime);
+
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
+        setDayActionError('End time must be after the start time.');
+        return;
+      }
+
+      try {
+        setPendingUpdateId(id);
+        setDayActionError(null);
+        await DataStore.update('placeholderSlots', id, { startTime, endTime });
+        setEditingPlaceholder(null);
+      } catch (error) {
+        console.error('Failed to update placeholder slot', error);
+        setDayActionError('Unable to update this session. Please try again.');
+      } finally {
+        setPendingUpdateId(null);
+      }
+    },
+    [editingPlaceholder]
   );
 
   const handleEventDidMount = useCallback(
@@ -1939,18 +2191,18 @@ export function CalendarWorkspace() {
         ) : null}
       </div>
       {activeDayDetails ? (
-        <div className="fixed inset-0 z-40 flex">
+        <div className="fixed inset-0 z-40 flex items-center justify-center px-4 py-10 sm:px-6">
           <button
             type="button"
             aria-label="Close day details"
-            className="flex-1 bg-slate-950/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
             onClick={closeDayDetails}
           />
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="calendar-day-drawer-title"
-            className="relative flex h-full w-full max-w-xl flex-col border-l border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+            className="relative z-10 flex w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-6 border-b border-white/10 p-6">
               <div className="space-y-2">
@@ -1995,6 +2247,8 @@ export function CalendarWorkspace() {
                     const isHighlighted =
                       activeDayDetails.initialEventId &&
                       activeDayDetails.initialEventId === entry.id;
+                    const isEditingPlaceholder =
+                      entry.kind === 'placeholder' && editingPlaceholder?.id === entry.id;
                     return (
                       <li key={`${entry.kind}_${entry.id}`}>
                         <article
@@ -2004,46 +2258,163 @@ export function CalendarWorkspace() {
                               : 'border-white/10'
                           }`}
                         >
-                          <div className="flex items-start gap-4">
-                            <span
-                              aria-hidden
-                              className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white"
-                              style={{ backgroundColor: entry.accentColor }}
-                            >
-                              {entry.kind === 'lesson' ? 'L' : 'S'}
-                            </span>
-                            <div className="flex-1 space-y-2">
-                              <div>
-                                <p className="text-sm font-semibold uppercase tracking-wide text-accent/80">
-                                  {entry.kind === 'lesson' ? 'Lesson' : 'Session'}
-                                </p>
-                                <h4 className="text-lg font-semibold text-white">{entry.title}</h4>
-                                <p className="text-sm text-slate-300">{entry.subtitle}</p>
-                              </div>
-                              <div className="flex flex-wrap gap-2 text-xs text-slate-300">
-                                <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
-                                  <Clock className="h-3.5 w-3.5" aria-hidden />
-                                  {entry.timeLabel}
-                                </span>
-                                {entry.levelLabel ? (
+                          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                            <div className="flex items-start gap-4 md:flex-1">
+                              <span
+                                aria-hidden
+                                className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white"
+                                style={{ backgroundColor: entry.accentColor }}
+                              >
+                                {entry.kind === 'lesson' ? 'L' : 'S'}
+                              </span>
+                              <div className="flex-1 space-y-3">
+                                <div>
+                                  <p className="text-sm font-semibold uppercase tracking-wide text-accent/80">
+                                    {entry.kind === 'lesson' ? 'Lesson' : 'Session'}
+                                  </p>
+                                  <h4 className="text-lg font-semibold text-white">{entry.title}</h4>
+                                  <p className="text-sm text-slate-300">{entry.subtitle}</p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-xs text-slate-300">
                                   <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
-                                    {entry.levelLabel}
+                                    <Clock className="h-3.5 w-3.5" aria-hidden />
+                                    {entry.timeLabel}
                                   </span>
+                                  {entry.levelLabel ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                      {entry.levelLabel}
+                                    </span>
+                                  ) : null}
+                                  {entry.statusLabel ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                      {entry.statusLabel}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {entry.kind === 'placeholder' && entry.relatedLesson ? (
+                                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-300">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                      Linked lesson
+                                    </p>
+                                    <p className="mt-1 text-base font-semibold text-white">
+                                      {entry.relatedLesson.title}
+                                    </p>
+                                    <p className="text-xs text-slate-400">{entry.relatedLesson.subtitle}</p>
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                        <Clock className="h-3.5 w-3.5" aria-hidden />
+                                        {entry.relatedLesson.timeLabel}
+                                      </span>
+                                      {entry.relatedLesson.statusLabel ? (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                          {entry.relatedLesson.statusLabel}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
                                 ) : null}
-                                {entry.statusLabel ? (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
-                                    {entry.statusLabel}
-                                  </span>
+                                {entry.kind === 'placeholder' && !entry.relatedLesson && entry.templatePreview ? (
+                                  <div className="rounded-2xl border border-dashed border-white/15 bg-slate-900/40 p-4 text-sm text-slate-300">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                      Suggested template
+                                    </p>
+                                    <p className="mt-1 text-base font-semibold text-white">
+                                      {entry.templatePreview.name}
+                                    </p>
+                                    <p className="text-xs text-slate-400">{entry.templatePreview.phaseLabel}</p>
+                                    {entry.templatePreview.summary ? (
+                                      <p className="mt-2 text-xs text-slate-400">
+                                        {entry.templatePreview.summary}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {entry.kind === 'placeholder' && isEditingPlaceholder ? (
+                                  <form
+                                    className="space-y-3 rounded-2xl border border-white/10 bg-slate-900/60 p-4"
+                                    onSubmit={handleSavePlaceholderEdit}
+                                  >
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>Start time</span>
+                                        <input
+                                          type="time"
+                                          value={editingPlaceholder?.startTime ?? ''}
+                                          onChange={(event) =>
+                                            handlePlaceholderFieldChange('startTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>End time</span>
+                                        <input
+                                          type="time"
+                                          value={editingPlaceholder?.endTime ?? ''}
+                                          onChange={(event) =>
+                                            handlePlaceholderFieldChange('endTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="submit"
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent transition hover:border-accent/60 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                        disabled={pendingUpdateId === entry.id}
+                                      >
+                                        {pendingUpdateId === entry.id ? 'Saving…' : 'Save session'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelPlaceholderEdit}
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </form>
                                 ) : null}
                               </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 md:flex-col md:items-end md:justify-center">
+                              {entry.kind === 'placeholder' && !isEditingPlaceholder ? (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingPlaceholder(entry)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/50 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
+                                >
+                                  Edit session
+                                </button>
+                              ) : null}
+                              {entry.kind === 'placeholder' && entry.relatedLesson ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace(entry.relatedLesson?.id)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Open lesson
+                                </button>
+                              ) : null}
+                              {entry.kind === 'placeholder' && !entry.relatedLesson && entry.templatePreview ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace()}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Browse templates
+                                </button>
+                              ) : null}
                               {entry.canDelete ? (
                                 <button
                                   type="button"
                                   className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-200 transition hover:border-rose-400/60 hover:bg-rose-500/10 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
                                   onClick={() => handleDeleteEntry(entry)}
-                                  disabled={pendingDeleteId === entry.id}
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" aria-hidden />
                                   {pendingDeleteId === entry.id ? 'Removing…' : entry.deleteLabel}

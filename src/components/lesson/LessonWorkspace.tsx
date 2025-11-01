@@ -390,6 +390,22 @@ export function LessonWorkspace() {
   const skipNextSaveRef = useRef(true);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ lessonId?: string }>).detail;
+      if (!detail?.lessonId) {
+        return;
+      }
+
+      setActiveLessonId(detail.lessonId);
+    };
+
+    window.addEventListener('planner:openLesson', handler as EventListener);
+    return () => {
+      window.removeEventListener('planner:openLesson', handler as EventListener);
+    };
+  }, []);
+
   const loadLessons = useCallback(async () => {
     setIsLoading(true);
     setError(null);

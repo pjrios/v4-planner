@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { addDays, format, isValid, parseISO } from 'date-fns';
+import { addDays, format, getISODay, isValid, parseISO, startOfDay } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -166,6 +166,128 @@ function hexToRgba(hexColor: string | undefined | null, alpha: number) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+type HolidayWindow = {
+  id: string;
+  start: Date;
+  end: Date;
+  appliesToAll: boolean;
+  targets: Set<string>;
+};
+
+function normalizeTarget(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function mapHolidayToWindow(holiday: Holiday): HolidayWindow | null {
+  const start = parseISO(holiday.startDate);
+  const end = parseISO(holiday.endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    return null;
+  }
+
+  const targets = new Set(holiday.affectsGroups.map(normalizeTarget));
+
+  return {
+    id: holiday.id,
+    start: startOfDay(start),
+    end: startOfDay(end),
+    appliesToAll: targets.has('all'),
+    targets,
+  };
+}
+
+function holidayCoversGroup(window: HolidayWindow, group: Group) {
+  if (window.appliesToAll) {
+    return true;
+  }
+
+  const comparisons = [group.id, group.displayName, group.levelId].map(normalizeTarget);
+  return comparisons.some((value) => window.targets.has(value));
+}
+
+function dateFallsInside(date: Date, window: HolidayWindow) {
+  return date >= window.start && date <= window.end;
+}
+
+function computeNextOccurrenceOnOrAfter(start: Date, desiredIsoDay: number) {
+  const isoDay = getISODay(start);
+  const offset = (desiredIsoDay - isoDay + 7) % 7;
+  return startOfDay(addDays(start, offset));
+}
+
+function findEarliestScheduledDate(
+  schedules: Schedule[],
+  trimesters: Trimester[],
+  groups: Group[],
+  holidays: Holiday[]
+) {
+  if (!schedules.length || !trimesters.length || !groups.length) {
+    return null as string | null;
+  }
+
+  const trimesterMap = new Map(trimesters.map((trimester) => [trimester.id, trimester]));
+  const groupMap = new Map(groups.map((group) => [group.id, group]));
+  const holidayWindows = holidays
+    .map(mapHolidayToWindow)
+    .filter((window): window is HolidayWindow => window !== null);
+
+  const today = startOfDay(new Date());
+  let best: string | null = null;
+
+  for (const schedule of schedules) {
+    const trimester = trimesterMap.get(schedule.trimesterId);
+    const group = groupMap.get(schedule.groupId);
+
+    if (!trimester || !group) {
+      continue;
+    }
+
+    const trimesterStart = parseISO(trimester.startDate);
+    const trimesterEnd = parseISO(trimester.endDate);
+
+    if (
+      Number.isNaN(trimesterStart.getTime()) ||
+      Number.isNaN(trimesterEnd.getTime()) ||
+      trimesterStart > trimesterEnd
+    ) {
+      continue;
+    }
+
+    const searchStart = startOfDay(trimesterStart > today ? trimesterStart : today);
+    const searchEnd = startOfDay(trimesterEnd);
+
+    if (searchStart > searchEnd) {
+      continue;
+    }
+
+    const relevantHolidays = holidayWindows.filter((window) => holidayCoversGroup(window, group));
+
+    for (const session of schedule.sessions) {
+      if (!session || typeof session.dayOfWeek !== 'number') {
+        continue;
+      }
+
+      let occurrence = computeNextOccurrenceOnOrAfter(searchStart, session.dayOfWeek);
+
+      while (occurrence <= searchEnd) {
+        const blocked = relevantHolidays.some((window) => dateFallsInside(occurrence, window));
+        if (!blocked) {
+          const isoDate = format(occurrence, ISO_DATE_FORMAT);
+          if (!best || isoDate < best) {
+            best = isoDate;
+          }
+          break;
+        }
+
+        occurrence = addDays(occurrence, 7);
+      }
+    }
+  }
+
+  return best;
+}
+
 function titleCaseStatus(status: LessonStatus) {
   return status
     .split('_')
@@ -240,8 +362,8 @@ function createPlaceholderEvents(
     const accent = level?.color ?? DEFAULT_ACCENT;
     const isExpected = slot.source === 'expected';
     const placeholderLabel = isExpected ? 'Scheduled session' : 'Placeholder slot';
-    const background = hexToRgba(accent, isExpected ? 0.08 : 0.12);
-    const border = hexToRgba(accent, isExpected ? 0.24 : 0.35);
+    const background = hexToRgba(accent, isExpected ? 0.18 : 0.24);
+    const border = hexToRgba(accent, isExpected ? 0.45 : 0.55);
     const classNames = [
       'placeholder-event',
       isExpected ? 'placeholder-event-expected' : 'placeholder-event-saved',
@@ -256,7 +378,7 @@ function createPlaceholderEvents(
       classNames,
       backgroundColor: background,
       borderColor: border,
-      textColor: '#cbd5f5',
+      textColor: '#f8fafc',
       extendedProps: {
         kind: 'placeholder',
         groupName: group?.displayName ?? 'Unknown group',
@@ -301,11 +423,10 @@ export function CalendarWorkspace() {
   const latestRequestedRange = useRef<string | null>(null);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
-  const [visibleRange, setVisibleRange] = useState<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
-    new WeakMap<HTMLElement, { show: () => void; hide: () => void }>()
+    new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
   );
   const tooltipSourceRef = useRef<HTMLElement | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
@@ -419,7 +540,6 @@ export function CalendarWorkspace() {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
-      setVisibleRange({ start: arg.start, end: arg.end });
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
@@ -533,8 +653,39 @@ export function CalendarWorkspace() {
     lastAutoFocusedDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
+  const scheduleSpan = useMemo(() => {
+    let minStart: Date | null = null;
+    let maxEnd: Date | null = null;
+
+    for (const trimester of calendarData.trimesters) {
+      const start = parseISO(trimester.startDate);
+      const end = parseISO(trimester.endDate);
+
+      if (!isValid(start) || !isValid(end)) {
+        continue;
+      }
+
+      const normalizedStart = startOfDay(start);
+      const normalizedEnd = startOfDay(end);
+
+      if (!minStart || normalizedStart < minStart) {
+        minStart = normalizedStart;
+      }
+
+      if (!maxEnd || normalizedEnd > maxEnd) {
+        maxEnd = normalizedEnd;
+      }
+    }
+
+    if (!minStart || !maxEnd || minStart > maxEnd) {
+      return null;
+    }
+
+    return { start: minStart, end: maxEnd };
+  }, [calendarData.trimesters]);
+
   const expectedScheduleSlots = useMemo(() => {
-    if (!visibleRange) {
+    if (!scheduleSpan) {
       return [] as PlaceholderSlot[];
     }
 
@@ -543,22 +694,18 @@ export function CalendarWorkspace() {
       calendarData.trimesters,
       calendarData.groups,
       calendarData.holidays,
-      visibleRange.start,
-      visibleRange.end
+      scheduleSpan.start,
+      scheduleSpan.end
     );
   }, [
     calendarData.groups,
     calendarData.holidays,
     calendarData.schedules,
     calendarData.trimesters,
-    visibleRange,
+    scheduleSpan,
   ]);
 
   const availablePlaceholders = useMemo(() => {
-    if (!visibleRange) {
-      return calendarData.placeholders;
-    }
-
     const combined = new Map<string, PlaceholderSlot>();
 
     for (const slot of expectedScheduleSlots) {
@@ -582,12 +729,28 @@ export function CalendarWorkspace() {
 
       return a.groupId.localeCompare(b.groupId);
     });
-  }, [calendarData.placeholders, expectedScheduleSlots, visibleRange]);
+  }, [calendarData.placeholders, expectedScheduleSlots]);
 
   const lessons = calendarData.lessons;
 
+  const earliestScheduledSlotDate = useMemo(
+    () =>
+      findEarliestScheduledDate(
+        calendarData.schedules,
+        calendarData.trimesters,
+        calendarData.groups,
+        calendarData.holidays
+      ),
+    [
+      calendarData.groups,
+      calendarData.holidays,
+      calendarData.schedules,
+      calendarData.trimesters,
+    ]
+  );
+
   useEffect(() => {
-    if (!lessons.length && !availablePlaceholders.length) {
+    if (!lessons.length && !availablePlaceholders.length && !earliestScheduledSlotDate) {
       return;
     }
 
@@ -601,6 +764,10 @@ export function CalendarWorkspace() {
       if (slot.date) {
         allDates.push(slot.date);
       }
+    }
+
+    if (earliestScheduledSlotDate) {
+      allDates.push(earliestScheduledSlotDate);
     }
 
     if (allDates.length === 0) {
@@ -636,8 +803,9 @@ export function CalendarWorkspace() {
     }
 
     api.gotoDate(target);
+    void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
-  }, [availablePlaceholders, lessons]);
+  }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {
     if (activeView === 'dayGridMonth') {
@@ -949,10 +1117,6 @@ export function CalendarWorkspace() {
 
   const handleEventDidMount = useCallback(
     (arg: EventMountArg) => {
-      if (activeView === 'dayGridMonth') {
-        return;
-      }
-
       const { event, el } = arg;
       const rawKind = event.extendedProps.kind as string | undefined;
       const kind: 'lesson' | 'placeholder' = rawKind === 'placeholder' ? 'placeholder' : 'lesson';
@@ -1051,14 +1215,24 @@ export function CalendarWorkspace() {
         }
       };
 
+      const handleClick = (event: MouseEvent) => {
+        event.preventDefault();
+        if (tooltipSourceRef.current === el) {
+          hide();
+        } else {
+          show();
+        }
+      };
+
       el.addEventListener('mouseenter', show);
       el.addEventListener('mouseleave', hide);
       el.addEventListener('focus', show);
       el.addEventListener('blur', hide);
+      el.addEventListener('click', handleClick);
 
-      tooltipHandlersRef.current.set(el, { show, hide });
+      tooltipHandlersRef.current.set(el, { show, hide, click: handleClick });
     },
-    [activeView, clearTooltip]
+    [clearTooltip]
   );
 
   const handleEventWillUnmount = useCallback(
@@ -1069,6 +1243,9 @@ export function CalendarWorkspace() {
         arg.el.removeEventListener('mouseleave', handlers.hide);
         arg.el.removeEventListener('focus', handlers.show);
         arg.el.removeEventListener('blur', handlers.hide);
+        if (handlers.click) {
+          arg.el.removeEventListener('click', handlers.click);
+        }
         tooltipHandlersRef.current.delete(arg.el);
       }
 

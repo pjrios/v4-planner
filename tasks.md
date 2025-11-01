@@ -25,7 +25,7 @@
 - [x] Create day/week tooltips and keyboard shortcuts.
 
 ## Lesson Planning
-- [ ] Build Lesson drawer/modal shell with tab navigation.
+- [x] Build Lesson drawer/modal shell with tab navigation.
 - [ ] Implement structured fields for pre/while/post activities and validations.
 - [ ] Add resource and rubric selectors with attachment metadata.
 - [ ] Enable autosave (debounce) with “Last saved” indicator.

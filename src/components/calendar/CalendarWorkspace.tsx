@@ -932,6 +932,32 @@ export function CalendarWorkspace() {
             : undefined;
         maybeChanges?.unsubscribe?.(handler);
       };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
     }
 
     const fallbackCleanups: Array<() => void> = [];

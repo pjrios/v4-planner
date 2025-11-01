@@ -7,14 +7,17 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import type {
   DatesSetArg,
+  EventClickArg,
   EventContentArg,
   EventInput,
   EventMountArg,
+  MoreLinkArg,
   MoreLinkContentArg,
 } from '@fullcalendar/core';
-import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import type { DateClickArg } from '@fullcalendar/interaction';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Trash2, X } from 'lucide-react';
 import { DataStore, db } from '../../data/db';
-import { getExpectedSlotsForRange } from '../../data/placeholders';
+import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
   Holiday,
@@ -81,6 +84,42 @@ type TooltipState = {
   left: number;
   placement: TooltipPlacement;
 };
+
+type ActiveDayDetailsState = {
+  date: string;
+  initialEventId?: string | null;
+};
+
+type DayDetailEntry =
+  | {
+      kind: 'lesson';
+      id: string;
+      title: string;
+      subtitle: string;
+      levelLabel: string | null;
+      timeLabel: string;
+      statusLabel: string | null;
+      accentColor: string;
+      startSortKey: string;
+      deleteLabel: string;
+      canDelete: true;
+      lesson: Lesson;
+    }
+  | {
+      kind: 'placeholder';
+      id: string;
+      title: string;
+      subtitle: string;
+      levelLabel: string | null;
+      timeLabel: string;
+      statusLabel: string | null;
+      accentColor: string;
+      startSortKey: string;
+      deleteLabel: string;
+      canDelete: boolean;
+      placeholderSource: PlaceholderSlot['source'];
+      slot: PlaceholderSlot;
+    };
 
 function toDateTime(date: string, time: string) {
   if (!time) {
@@ -334,6 +373,7 @@ function createLessonEvents(
         accentColor: baseColor,
         startTime: lesson.startTime,
         endTime: lesson.endTime,
+        date: lesson.date,
       },
     });
 
@@ -388,6 +428,7 @@ function createPlaceholderEvents(
         endTime: slot.endTime,
         placeholderSource: slot.source,
         placeholderLabel,
+        date: slot.date,
       },
     });
   }
@@ -419,18 +460,24 @@ export function CalendarWorkspace() {
   const [isRangeLoading, setIsRangeLoading] = useState(true);
   const [baseError, setBaseError] = useState<string | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
+  const [activeDayDetails, setActiveDayDetails] = useState<ActiveDayDetailsState | null>(null);
+  const [dayActionError, setDayActionError] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
   const nextRangeRequestToken = useRef(0);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
+  const shouldAutoFocusEarliest = useRef(true);
+  const pendingAutoFocusDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
     new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
   );
   const tooltipSourceRef = useRef<HTMLElement | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
+  const dayDrawerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const loadStaticCollections = useCallback(async () => {
     setIsBaseLoading(true);
@@ -547,38 +594,58 @@ export function CalendarWorkspace() {
     []
   );
 
+  const markManualNavigation = useCallback(() => {
+    shouldAutoFocusEarliest.current = false;
+    pendingAutoFocusDate.current = null;
+  }, []);
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
+
+      if (pendingAutoFocusDate.current) {
+        const pendingDate = parseISO(pendingAutoFocusDate.current);
+        if (isValid(pendingDate) && pendingDate >= arg.start && pendingDate <= arg.end) {
+          pendingAutoFocusDate.current = null;
+        }
+      }
+
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
   );
 
   const handlePrev = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().prev();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleNext = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().next();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleToday = useCallback(() => {
+    markManualNavigation();
     const api = calendarRef.current?.getApi();
     api?.today();
-  }, []);
+  }, [markManualNavigation]);
 
-  const handleViewChange = useCallback((view: CalendarViewType) => {
-    const api = calendarRef.current?.getApi();
-    if (!api || api.view.type === view) {
-      return;
-    }
+  const handleViewChange = useCallback(
+    (view: CalendarViewType) => {
+      const api = calendarRef.current?.getApi();
+      if (!api || api.view.type === view) {
+        return;
+      }
 
-    setActiveView(view);
-    api.changeView(view);
-  }, []);
+      markManualNavigation();
+      setActiveView(view);
+      api.changeView(view);
+    },
+    [markManualNavigation]
+  );
 
   const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedTrimesterId(event.target.value);
@@ -651,7 +718,7 @@ export function CalendarWorkspace() {
         void loadStaticCollections();
       }
 
-      if (shouldRefreshRange) {
+      if (shouldReloadStatic || shouldRefreshRange) {
         lastPrefetchedRange.current = null;
         latestRequestedRange.current = null;
         const range = currentVisibleRange.current;
@@ -661,32 +728,95 @@ export function CalendarWorkspace() {
       }
     };
 
-    const changeEventSource = (db.on as unknown as {
-      changes?: {
-        subscribe?: (listener: typeof handler) => void;
-        unsubscribe?: (listener: typeof handler) => void;
-      };
-    }).changes;
+    const rawOn = db.on as unknown;
 
-    if (changeEventSource?.subscribe) {
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
       changeEventSource.subscribe(handler);
       return () => {
         changeEventSource.unsubscribe?.(handler);
       };
     }
 
-    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
-      changes?: { unsubscribe?: (listener: typeof handler) => void };
-    };
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
 
-    if (typeof directOn === 'function') {
-      directOn('changes', handler);
       return () => {
-        directOn.changes?.unsubscribe?.(handler);
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
       };
     }
 
-    return () => undefined;
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['groups', db.groups.hook],
+      ['levels', db.levels.hook],
+      ['topics', db.topics.hook],
+      ['schedules', db.schedules.hook],
+      ['holidays', db.holidays.hook],
+      ['placeholderSlots', db.placeholderSlots.hook],
+      ['lessons', db.lessons.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {
@@ -729,37 +859,17 @@ export function CalendarWorkspace() {
 
   useEffect(() => {
     lastAutoFocusedDate.current = null;
+    shouldAutoFocusEarliest.current = true;
+    pendingAutoFocusDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
-    let minStart: Date | null = null;
-    let maxEnd: Date | null = null;
-
-    for (const trimester of calendarData.trimesters) {
-      const start = parseISO(trimester.startDate);
-      const end = parseISO(trimester.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        continue;
-      }
-
-      const normalizedStart = startOfDay(start);
-      const normalizedEnd = startOfDay(end);
-
-      if (!minStart || normalizedStart < minStart) {
-        minStart = normalizedStart;
-      }
-
-      if (!maxEnd || normalizedEnd > maxEnd) {
-        maxEnd = normalizedEnd;
-      }
-    }
-
-    if (!minStart || !maxEnd || minStart > maxEnd) {
+    const span = getActiveTrimesterSpan(calendarData.trimesters);
+    if (!span) {
       return null;
     }
 
-    return { start: minStart, end: maxEnd };
+    return { start: span.start, end: span.end };
   }, [calendarData.trimesters]);
 
   const expectedScheduleSlots = useMemo(() => {
@@ -850,6 +960,72 @@ export function CalendarWorkspace() {
     ]
   );
 
+  const groupsById = useMemo(
+    () => new Map(calendarData.groups.map((group) => [group.id, group])),
+    [calendarData.groups]
+  );
+  const levelsById = useMemo(
+    () => new Map(calendarData.levels.map((level) => [level.id, level])),
+    [calendarData.levels]
+  );
+  const topicsById = useMemo(
+    () => new Map(calendarData.topics.map((topic) => [topic.id, topic])),
+    [calendarData.topics]
+  );
+  const selectedStatusSet = useMemo(() => new Set(selectedStatuses), [selectedStatuses]);
+
+  const lessonMatchesFilters = useCallback(
+    (lesson: Lesson) => {
+      if (selectedTrimesterId !== 'all' && lesson.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && lesson.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(lesson.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      if (selectedStatusSet.size > 0 && !selectedStatusSet.has(lesson.status)) {
+        return false;
+      }
+
+      return true;
+    },
+    [groupsById, selectedGroupId, selectedLevelId, selectedStatusSet, selectedTrimesterId]
+  );
+
+  const placeholderMatchesFilters = useCallback(
+    (slot: PlaceholderSlot) => {
+      if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && slot.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      return true;
+    },
+    [groupsById, selectedGroupId, selectedLevelId, selectedTrimesterId]
+  );
+
   useEffect(() => {
     if (!lessons.length && !availablePlaceholders.length && !earliestScheduledSlotDate) {
       return;
@@ -883,6 +1059,9 @@ export function CalendarWorkspace() {
     }, null);
 
     if (!earliestDate || earliestDate === lastAutoFocusedDate.current) {
+      if (!shouldAutoFocusEarliest.current && earliestDate) {
+        lastAutoFocusedDate.current = earliestDate;
+      }
       return;
     }
 
@@ -903,9 +1082,16 @@ export function CalendarWorkspace() {
       return;
     }
 
+    if (!shouldAutoFocusEarliest.current) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    pendingAutoFocusDate.current = earliestDate;
     api.gotoDate(target);
     void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
+    shouldAutoFocusEarliest.current = false;
   }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {
@@ -1032,35 +1218,7 @@ export function CalendarWorkspace() {
   }, [handleNext, handlePrev, handleToday, handleViewChange]);
 
   const filteredEvents = useMemo<EventInput[]>(() => {
-    const groupsById = new Map(calendarData.groups.map((group) => [group.id, group]));
-    const levelsById = new Map(calendarData.levels.map((level) => [level.id, level]));
-    const topicsById = new Map(calendarData.topics.map((topic) => [topic.id, topic]));
-    const activeStatuses = new Set(selectedStatuses);
-
-    const lessonsMatchingFilters = calendarData.lessons.filter((lesson) => {
-      if (selectedTrimesterId !== 'all' && lesson.trimesterId !== selectedTrimesterId) {
-        return false;
-      }
-
-      if (selectedGroupId !== 'all' && lesson.groupId !== selectedGroupId) {
-        return false;
-      }
-
-      const group = groupsById.get(lesson.groupId);
-      if (!group) {
-        return false;
-      }
-
-      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
-        return false;
-      }
-
-      if (activeStatuses.size > 0 && !activeStatuses.has(lesson.status)) {
-        return false;
-      }
-
-      return true;
-    });
+    const lessonsMatchingFilters = calendarData.lessons.filter(lessonMatchesFilters);
 
     const { events: lessonEvents } = createLessonEvents(
       lessonsMatchingFilters,
@@ -1076,26 +1234,7 @@ export function CalendarWorkspace() {
       topicsById
     );
 
-    const placeholdersMatchingFilters = availablePlaceholders.filter((slot) => {
-      if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
-        return false;
-      }
-
-      if (selectedGroupId !== 'all' && slot.groupId !== selectedGroupId) {
-        return false;
-      }
-
-      const group = groupsById.get(slot.groupId);
-      if (!group) {
-        return false;
-      }
-
-      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
-        return false;
-      }
-
-      return true;
-    });
+    const placeholdersMatchingFilters = availablePlaceholders.filter(placeholderMatchesFilters);
 
     const placeholderEvents = createPlaceholderEvents(
       placeholdersMatchingFilters,
@@ -1107,14 +1246,123 @@ export function CalendarWorkspace() {
     return [...lessonEvents, ...placeholderEvents];
   }, [
     availablePlaceholders,
-    calendarData.groups,
-    calendarData.levels,
     calendarData.lessons,
-    calendarData.topics,
-    selectedGroupId,
-    selectedLevelId,
-    selectedStatuses,
-    selectedTrimesterId,
+    groupsById,
+    lessonMatchesFilters,
+    levelsById,
+    placeholderMatchesFilters,
+    topicsById,
+  ]);
+
+  const dayDetailEntries = useMemo<DayDetailEntry[] | null>(() => {
+    if (!activeDayDetails) {
+      return null;
+    }
+
+    const { date } = activeDayDetails;
+    const entries: DayDetailEntry[] = [];
+
+    for (const lesson of calendarData.lessons) {
+      if (lesson.date !== date) {
+        continue;
+      }
+
+      if (!lessonMatchesFilters(lesson)) {
+        continue;
+      }
+
+      const group = groupsById.get(lesson.groupId);
+      const level = group ? levelsById.get(group.levelId) : undefined;
+      const topic = topicsById.get(lesson.topicId);
+      const accentColor = topic?.color ?? level?.color ?? DEFAULT_ACCENT;
+      const timeLabel = formatTimeRange(lesson.startTime, lesson.endTime) || 'Time not set';
+      const levelLabel = level
+        ? `Grade ${level.gradeNumber} ${level.subject}`
+        : group
+        ? 'Unassigned level'
+        : null;
+
+      entries.push({
+        kind: 'lesson',
+        id: lesson.id,
+        title: topic?.name ?? 'Untitled lesson',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel: titleCaseStatus(lesson.status),
+        accentColor,
+        startSortKey: lesson.startTime ?? '99:99',
+        deleteLabel: 'Delete lesson',
+        canDelete: true,
+        lesson,
+      });
+    }
+
+    for (const slot of availablePlaceholders) {
+      if (slot.date !== date) {
+        continue;
+      }
+
+      if (!placeholderMatchesFilters(slot)) {
+        continue;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      const level = group ? levelsById.get(group.levelId) : undefined;
+      const accentColor = level?.color ?? DEFAULT_ACCENT;
+      const timeLabel = formatTimeRange(slot.startTime, slot.endTime) || 'Time not set';
+      const levelLabel = level
+        ? `Grade ${level.gradeNumber} ${level.subject}`
+        : group
+        ? 'Unassigned level'
+        : null;
+      const statusLabel =
+        slot.source === 'schedule'
+          ? 'From schedule plan'
+          : slot.source === 'expected'
+          ? 'Projected from recurrence'
+          : null;
+
+      entries.push({
+        kind: 'placeholder',
+        id: slot.id,
+        title:
+          slot.source === 'schedule' || slot.source === 'expected'
+            ? 'Scheduled session'
+            : 'Placeholder slot',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel,
+        accentColor,
+        startSortKey: slot.startTime ?? '99:99',
+        deleteLabel: slot.source === 'schedule' ? 'Skip this session' : 'Remove placeholder',
+        canDelete: slot.source !== 'expected',
+        placeholderSource: slot.source,
+        slot,
+      });
+    }
+
+    return entries.sort((a, b) => {
+      if (a.startSortKey !== b.startSortKey) {
+        return a.startSortKey.localeCompare(b.startSortKey);
+      }
+
+      if (a.subtitle !== b.subtitle) {
+        return a.subtitle.localeCompare(b.subtitle);
+      }
+
+      return a.title.localeCompare(b.title);
+    });
+  }, [
+    activeDayDetails,
+    availablePlaceholders,
+    calendarData.lessons,
+    groupsById,
+    lessonMatchesFilters,
+    levelsById,
+    placeholderMatchesFilters,
+    topicsById,
   ]);
 
   useEffect(() => {
@@ -1127,6 +1375,12 @@ export function CalendarWorkspace() {
       clearTooltip();
     }
   }, [activeTooltip, filteredEvents, clearTooltip]);
+
+  useEffect(() => {
+    if (activeDayDetails && dayDrawerCloseButtonRef.current) {
+      dayDrawerCloseButtonRef.current.focus();
+    }
+  }, [activeDayDetails]);
 
   const hasAnyData = calendarData.lessons.length > 0 || availablePlaceholders.length > 0;
   const loadError = baseError ?? rangeError;
@@ -1214,6 +1468,94 @@ export function CalendarWorkspace() {
       return `+${arg.num} more`;
     },
     [activeView]
+  );
+
+  const openDayDetails = useCallback((inputDate: string | undefined, eventId?: string | null) => {
+    if (!inputDate) {
+      return;
+    }
+
+    let normalized = inputDate.slice(0, 10);
+    const parsed = parseISO(inputDate);
+    if (isValid(parsed)) {
+      normalized = format(startOfDay(parsed), ISO_DATE_FORMAT);
+    }
+
+    setActiveDayDetails({ date: normalized, initialEventId: eventId ?? null });
+    setDayActionError(null);
+    setPendingDeleteId(null);
+  }, []);
+
+  const closeDayDetails = useCallback(() => {
+    setActiveDayDetails(null);
+    setDayActionError(null);
+    setPendingDeleteId(null);
+  }, []);
+
+  const handleEventClick = useCallback(
+    (arg: EventClickArg) => {
+      arg.jsEvent.preventDefault();
+      clearTooltip();
+      const dateProp = (arg.event.extendedProps.date as string | undefined) ?? arg.event.startStr;
+      openDayDetails(dateProp, arg.event.id);
+    },
+    [clearTooltip, openDayDetails]
+  );
+
+  const handleDateClick = useCallback(
+    (arg: DateClickArg) => {
+      markManualNavigation();
+      const isoDate = format(startOfDay(arg.date), ISO_DATE_FORMAT);
+      openDayDetails(isoDate);
+    },
+    [markManualNavigation, openDayDetails]
+  );
+
+  const handleMoreLinkClick = useCallback(
+    (arg: MoreLinkArg) => {
+      clearTooltip();
+      const isoDate = format(startOfDay(arg.date), ISO_DATE_FORMAT);
+      openDayDetails(isoDate);
+      return 'none';
+    },
+    [clearTooltip, openDayDetails]
+  );
+
+  const handleDeleteEntry = useCallback(
+    async (entry: DayDetailEntry) => {
+      if (!entry.canDelete) {
+        return;
+      }
+
+      const confirmationMessage =
+        entry.kind === 'lesson'
+          ? 'Delete this lesson? This action cannot be undone.'
+          : entry.placeholderSource === 'schedule'
+          ? 'Skip this scheduled session? It will no longer appear on the calendar.'
+          : 'Remove this placeholder slot?';
+
+      const confirmed = window.confirm(confirmationMessage);
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        setPendingDeleteId(entry.id);
+        setDayActionError(null);
+
+        if (entry.kind === 'lesson') {
+          await DataStore.remove('lessons', entry.id);
+        } else {
+          await DataStore.remove('placeholderSlots', entry.id);
+        }
+      } catch (error) {
+        console.error('Failed to delete calendar entry', error);
+        setDayActionError('Unable to delete this entry. Please try again.');
+      } finally {
+        setPendingDeleteId(null);
+      }
+    },
+    []
   );
 
   const handleEventDidMount = useCallback(
@@ -1545,6 +1887,9 @@ export function CalendarWorkspace() {
           moreLinkClassNames={moreLinkClassNames}
           eventDidMount={handleEventDidMount}
           eventWillUnmount={handleEventWillUnmount}
+          eventClick={handleEventClick}
+          dateClick={handleDateClick}
+          moreLinkClick={handleMoreLinkClick}
         />
         {activeTooltip ? (
           <div
@@ -1591,6 +1936,137 @@ export function CalendarWorkspace() {
           </div>
         ) : null}
       </div>
+      {activeDayDetails ? (
+        <div className="fixed inset-0 z-40 flex">
+          <button
+            type="button"
+            aria-label="Close day details"
+            className="flex-1 bg-slate-950/60 backdrop-blur-sm"
+            onClick={closeDayDetails}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="calendar-day-drawer-title"
+            className="relative flex h-full w-full max-w-xl flex-col border-l border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-6 border-b border-white/10 p-6">
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 text-sm uppercase tracking-wide text-accent/80">
+                  <CalendarDays className="h-4 w-4" aria-hidden />
+                  {(() => {
+                    const parsed = parseISO(activeDayDetails.date);
+                    return isValid(parsed)
+                      ? format(parsed, 'EEEE, MMMM d, yyyy')
+                      : activeDayDetails.date;
+                  })()}
+                </div>
+                <h3 id="calendar-day-drawer-title" className="text-2xl font-semibold text-white">
+                  Day overview
+                </h3>
+                <p className="text-sm text-slate-400">
+                  Review lessons and scheduled sessions for this day. Delete options remove only the
+                  selected occurrence.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={closeDayDetails}
+                  ref={dayDrawerCloseButtonRef}
+                  className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:border-white/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                  <span className="sr-only">Close</span>
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {dayActionError ? (
+                <p className="mb-4 rounded-2xl bg-rose-500/10 p-4 text-sm text-rose-200 ring-1 ring-rose-500/40">
+                  {dayActionError}
+                </p>
+              ) : null}
+              {dayDetailEntries && dayDetailEntries.length > 0 ? (
+                <ul className="flex flex-col gap-4">
+                  {dayDetailEntries.map((entry) => {
+                    const isHighlighted =
+                      activeDayDetails.initialEventId &&
+                      activeDayDetails.initialEventId === entry.id;
+                    return (
+                      <li key={`${entry.kind}_${entry.id}`}>
+                        <article
+                          className={`group relative overflow-hidden rounded-2xl border bg-white/5 p-4 transition hover:border-accent/50 ${
+                            isHighlighted
+                              ? 'border-accent/70 bg-accent/10 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
+                              : 'border-white/10'
+                          }`}
+                        >
+                          <div className="flex items-start gap-4">
+                            <span
+                              aria-hidden
+                              className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white"
+                              style={{ backgroundColor: entry.accentColor }}
+                            >
+                              {entry.kind === 'lesson' ? 'L' : 'S'}
+                            </span>
+                            <div className="flex-1 space-y-2">
+                              <div>
+                                <p className="text-sm font-semibold uppercase tracking-wide text-accent/80">
+                                  {entry.kind === 'lesson' ? 'Lesson' : 'Session'}
+                                </p>
+                                <h4 className="text-lg font-semibold text-white">{entry.title}</h4>
+                                <p className="text-sm text-slate-300">{entry.subtitle}</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2 text-xs text-slate-300">
+                                <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                  <Clock className="h-3.5 w-3.5" aria-hidden />
+                                  {entry.timeLabel}
+                                </span>
+                                {entry.levelLabel ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                    {entry.levelLabel}
+                                  </span>
+                                ) : null}
+                                {entry.statusLabel ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                    {entry.statusLabel}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {entry.canDelete ? (
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-200 transition hover:border-rose-400/60 hover:bg-rose-500/10 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  onClick={() => handleDeleteEntry(entry)}
+                                  disabled={pendingDeleteId === entry.id}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                                  {pendingDeleteId === entry.id ? 'Removing…' : entry.deleteLabel}
+                                </button>
+                              ) : (
+                                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  From schedule pattern
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-white/20 bg-surface/40 p-6 text-center text-sm text-slate-300">
+                  No lessons or sessions scheduled for this day yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

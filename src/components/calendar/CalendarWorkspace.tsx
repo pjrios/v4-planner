@@ -695,6 +695,8 @@ export function CalendarWorkspace() {
             : undefined;
         maybeChanges?.unsubscribe?.(handler);
       };
+      hooks.deleting.subscribe(deletingSubscriber);
+      fallbackCleanups.push(() => hooks.deleting.unsubscribe(deletingSubscriber));
     }
 
     const fallbackCleanups: Array<() => void> = [];
@@ -710,27 +712,35 @@ export function CalendarWorkspace() {
     ] as const;
 
     for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
       const emit = () => {
         handler([{ table }]);
       };
 
-      const creatingSubscriber = () => {
-        emit();
-      };
-      hooks.creating.subscribe(creatingSubscriber);
-      fallbackCleanups.push(() => hooks.creating.unsubscribe(creatingSubscriber));
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        if (!hook || typeof hook.subscribe !== 'function') {
+          return;
+        }
 
-      const updatingSubscriber = () => {
-        emit();
+        hook.subscribe(subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            hook.unsubscribe?.(subscriber);
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
       };
-      hooks.updating.subscribe(updatingSubscriber);
-      fallbackCleanups.push(() => hooks.updating.unsubscribe(updatingSubscriber));
 
-      const deletingSubscriber = () => {
-        emit();
-      };
-      hooks.deleting.subscribe(deletingSubscriber);
-      fallbackCleanups.push(() => hooks.deleting.unsubscribe(deletingSubscriber));
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
     }
 
     return () => {

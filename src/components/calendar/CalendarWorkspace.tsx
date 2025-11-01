@@ -614,6 +614,7 @@ export function CalendarWorkspace() {
   | null>(null);
   const [editingLesson, setEditingLesson] = useState<EditingLessonState | null>(null);
   const [pendingUpdateId, setPendingUpdateId] = useState<string | null>(null);
+  const [focusedDayEntryId, setFocusedDayEntryId] = useState<string | null>(null);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
   const nextRangeRequestToken = useRef(0);
@@ -629,6 +630,8 @@ export function CalendarWorkspace() {
   const tooltipSourceRef = useRef<HTMLElement | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
   const dayDrawerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dayDrawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const dayEntryRefs = useRef(new Map<string, HTMLLIElement>());
 
   const loadStaticCollections = useCallback(async () => {
     setIsBaseLoading(true);
@@ -1610,6 +1613,19 @@ export function CalendarWorkspace() {
     calendarData.templates,
   ]);
 
+  const displayedDayEntries = useMemo<DayDetailEntry[]>(() => {
+    if (!dayDetailEntries) {
+      return [];
+    }
+
+    if (!focusedDayEntryId) {
+      return dayDetailEntries;
+    }
+
+    const match = dayDetailEntries.find((entry) => entry.id === focusedDayEntryId);
+    return match ? [match] : dayDetailEntries;
+  }, [dayDetailEntries, focusedDayEntryId]);
+
   useEffect(() => {
     if (!activeTooltip) {
       return;
@@ -1620,6 +1636,54 @@ export function CalendarWorkspace() {
       clearTooltip();
     }
   }, [activeTooltip, filteredEvents, clearTooltip]);
+
+  useEffect(() => {
+    if (!activeDayDetails) {
+      return;
+    }
+
+    const targetId = focusedDayEntryId ?? activeDayDetails.initialEventId ?? null;
+    if (!targetId) {
+      return;
+    }
+
+    const container = dayDrawerScrollRef.current;
+    const element = dayEntryRefs.current.get(targetId);
+    if (!container || !element) {
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const delta = elementRect.top - containerRect.top;
+    const targetScroll =
+      container.scrollTop + delta - container.clientHeight / 2 + element.clientHeight / 2;
+    const nextPosition = Math.max(0, targetScroll);
+
+    if (typeof container.scrollTo === 'function') {
+      container.scrollTo({ top: nextPosition, behavior: 'smooth' });
+    } else {
+      container.scrollTop = nextPosition;
+    }
+  }, [activeDayDetails, displayedDayEntries, focusedDayEntryId]);
+
+  const isSingleEntryFocused = useMemo(() => {
+    if (!dayDetailEntries) {
+      return false;
+    }
+
+    if (!focusedDayEntryId) {
+      return false;
+    }
+
+    if (!dayDetailEntries.some((entry) => entry.id === focusedDayEntryId)) {
+      return false;
+    }
+
+    return dayDetailEntries.length > 1 && displayedDayEntries.length === 1;
+  }, [dayDetailEntries, displayedDayEntries, focusedDayEntryId]);
+
+  const totalDayEntries = dayDetailEntries?.length ?? 0;
 
   useEffect(() => {
     if (activeDayDetails && dayDrawerCloseButtonRef.current) {
@@ -1738,12 +1802,16 @@ export function CalendarWorkspace() {
     setActiveDayDetails({ date: normalized, initialEventId: eventId ?? null });
     setDayActionError(null);
     setPendingDeleteId(null);
+    setFocusedDayEntryId(eventId ?? null);
+    dayEntryRefs.current.clear();
   }, []);
 
   const closeDayDetails = useCallback(() => {
     setActiveDayDetails(null);
     setDayActionError(null);
     setPendingDeleteId(null);
+    setFocusedDayEntryId(null);
+    dayEntryRefs.current.clear();
   }, []);
 
   const handleEventClick = useCallback(
@@ -2374,7 +2442,7 @@ export function CalendarWorkspace() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="calendar-day-drawer-title"
-            className="relative z-10 flex w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+            className="relative z-10 flex w-full max-w-3xl max-h-[calc(100vh-4rem)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-6 border-b border-white/10 p-6">
               <div className="space-y-2">
@@ -2396,6 +2464,15 @@ export function CalendarWorkspace() {
                 </p>
               </div>
               <div className="flex items-center gap-3">
+                {isSingleEntryFocused ? (
+                  <button
+                    type="button"
+                    onClick={() => setFocusedDayEntryId(null)}
+                    className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  >
+                    Show full day
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={closeDayDetails}
@@ -2407,24 +2484,34 @@ export function CalendarWorkspace() {
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-6">
+            <div ref={dayDrawerScrollRef} className="flex-1 overflow-y-auto p-6">
               {dayActionError ? (
                 <p className="mb-4 rounded-2xl bg-rose-500/10 p-4 text-sm text-rose-200 ring-1 ring-rose-500/40">
                   {dayActionError}
                 </p>
               ) : null}
-              {dayDetailEntries && dayDetailEntries.length > 0 ? (
+              {displayedDayEntries.length > 0 ? (
                 <ul className="flex flex-col gap-4">
-                  {dayDetailEntries.map((entry) => {
+                  {displayedDayEntries.map((entry) => {
                     const isHighlighted =
-                      activeDayDetails.initialEventId &&
-                      activeDayDetails.initialEventId === entry.id;
+                      (activeDayDetails.initialEventId &&
+                        activeDayDetails.initialEventId === entry.id) ||
+                      (focusedDayEntryId ? focusedDayEntryId === entry.id : false);
                     const isEditingPlaceholder =
                       entry.kind === 'placeholder' && editingPlaceholder?.id === entry.id;
                     const isEditingLesson =
                       entry.kind === 'lesson' && editingLesson?.lesson.id === entry.id;
                     return (
-                      <li key={`${entry.kind}_${entry.id}`}>
+                      <li
+                        key={`${entry.kind}_${entry.id}`}
+                        ref={(element) => {
+                          if (!element) {
+                            dayEntryRefs.current.delete(entry.id);
+                          } else {
+                            dayEntryRefs.current.set(entry.id, element);
+                          }
+                        }}
+                      >
                         <article
                           className={`group relative overflow-hidden rounded-2xl border bg-white/5 p-4 transition hover:border-accent/50 ${
                             isHighlighted
@@ -2798,7 +2885,9 @@ export function CalendarWorkspace() {
                 </ul>
               ) : (
                 <div className="rounded-2xl border border-dashed border-white/20 bg-surface/40 p-6 text-center text-sm text-slate-300">
-                  No lessons or sessions scheduled for this day yet.
+                  {totalDayEntries === 0
+                    ? 'No lessons or sessions scheduled for this day yet.'
+                    : 'The selected entry is no longer available. Show the full day to review remaining sessions.'}
                 </div>
               )}
             </div>

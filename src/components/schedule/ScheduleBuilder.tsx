@@ -28,6 +28,8 @@ const INITIAL_SESSION: ScheduleSession = {
   endTime: '09:00',
 };
 
+const ALL_YEAR_PREFIX = 'all-year:';
+
 function toMinutes(time: string) {
   const [hours, minutes] = time.split(':').map(Number);
   return hours * 60 + minutes;
@@ -40,6 +42,35 @@ function sortSessions(sessions: ScheduleSession[]) {
     }
     return a.startTime.localeCompare(b.startTime);
   });
+}
+
+function isAllYearSelection(value: string | null): value is `${typeof ALL_YEAR_PREFIX}${string}` {
+  return typeof value === 'string' && value.startsWith(ALL_YEAR_PREFIX);
+}
+
+function parseAcademicYearFromSelection(selection: `${typeof ALL_YEAR_PREFIX}${string}`) {
+  return selection.slice(ALL_YEAR_PREFIX.length);
+}
+
+function sessionsMatch(sortedReference: ScheduleSession[], candidate: ScheduleSession[]) {
+  if (sortedReference.length !== candidate.length) {
+    return false;
+  }
+
+  const normalizedCandidate = sortSessions(candidate);
+  return sortedReference.every((session, index) => {
+    const comparison = normalizedCandidate[index];
+    return (
+      comparison &&
+      comparison.dayOfWeek === session.dayOfWeek &&
+      comparison.startTime === session.startTime &&
+      comparison.endTime === session.endTime
+    );
+  });
+}
+
+function sortTrimestersByStart(trimesters: Trimester[]) {
+  return [...trimesters].sort((a, b) => a.startDate.localeCompare(b.startDate));
 }
 
 function hasConflict(sessions: ScheduleSession[], candidate: ScheduleSession) {
@@ -104,7 +135,7 @@ export function ScheduleBuilder() {
 
   useEffect(() => {
     if (!selectedTrimesterId && trimesters.length) {
-      setSelectedTrimesterId(trimesters[0].id);
+      setSelectedTrimesterId(sortTrimestersByStart(trimesters)[0]?.id ?? null);
     }
   }, [selectedTrimesterId, trimesters]);
 
@@ -125,23 +156,99 @@ export function ScheduleBuilder() {
     }
   }, [selectedGroupId, groupsForLevel]);
 
+  const groupedTrimestersByYear = useMemo(() => {
+    const groupsByYear = new Map<
+      string,
+      { year: string; trimesters: Trimester[]; earliestStart: string }
+    >();
+
+    for (const trimester of trimesters) {
+      const existing = groupsByYear.get(trimester.academicYear);
+      if (!existing) {
+        groupsByYear.set(trimester.academicYear, {
+          year: trimester.academicYear,
+          earliestStart: trimester.startDate,
+          trimesters: [trimester],
+        });
+      } else {
+        existing.trimesters.push(trimester);
+        if (trimester.startDate < existing.earliestStart) {
+          existing.earliestStart = trimester.startDate;
+        }
+      }
+    }
+
+    return Array.from(groupsByYear.values()).sort((a, b) =>
+      a.earliestStart.localeCompare(b.earliestStart)
+    );
+  }, [trimesters]);
+
+  const isAllYear = isAllYearSelection(selectedTrimesterId);
+  const selectedAcademicYear = isAllYear ? parseAcademicYearFromSelection(selectedTrimesterId) : null;
+
+  const trimestersForSelection = useMemo(() => {
+    if (!isAllYear || !selectedAcademicYear) {
+      return [] as Trimester[];
+    }
+
+    return sortTrimestersByStart(
+      trimesters.filter((trimester) => trimester.academicYear === selectedAcademicYear)
+    );
+  }, [isAllYear, selectedAcademicYear, trimesters]);
+
   const activeSchedule = useMemo(() => {
-    if (!selectedTrimesterId || !selectedGroupId) return null;
+    if (!selectedTrimesterId || !selectedGroupId || isAllYear) return null;
     return (
       schedules.find(
         (schedule) => schedule.trimesterId === selectedTrimesterId && schedule.groupId === selectedGroupId
       ) ?? null
     );
-  }, [selectedGroupId, selectedTrimesterId, schedules]);
+  }, [isAllYear, selectedGroupId, selectedTrimesterId, schedules]);
+
+  const schedulesForAcademicYear = useMemo(() => {
+    if (!isAllYear || !selectedGroupId || !trimestersForSelection.length) {
+      return [] as Schedule[];
+    }
+
+    const trimesterIds = new Set(trimestersForSelection.map((trimester) => trimester.id));
+    return schedules.filter(
+      (schedule) => schedule.groupId === selectedGroupId && trimesterIds.has(schedule.trimesterId)
+    );
+  }, [isAllYear, schedules, selectedGroupId, trimestersForSelection]);
+
+  const allYearSessionState = useMemo(() => {
+    if (!isAllYear) {
+      return { sessions: [] as ScheduleSession[], inconsistent: false, scheduleCount: 0 };
+    }
+
+    if (!schedulesForAcademicYear.length) {
+      return { sessions: [] as ScheduleSession[], inconsistent: false, scheduleCount: 0 };
+    }
+
+    const baseSessions = sortSessions(schedulesForAcademicYear[0]?.sessions ?? []);
+    const inconsistent = schedulesForAcademicYear.slice(1).some((schedule) => {
+      return !sessionsMatch(baseSessions, schedule.sessions);
+    });
+
+    return {
+      sessions: baseSessions,
+      inconsistent,
+      scheduleCount: schedulesForAcademicYear.length,
+    };
+  }, [isAllYear, schedulesForAcademicYear]);
+
+  const initialSessions = useMemo(() => {
+    if (isAllYear) {
+      return allYearSessionState.sessions;
+    }
+
+    return activeSchedule ? sortSessions(activeSchedule.sessions) : ([] as ScheduleSession[]);
+  }, [activeSchedule, allYearSessionState.sessions, isAllYear]);
 
   useEffect(() => {
-    if (activeSchedule) {
-      setDraftSessions(sortSessions(activeSchedule.sessions));
-    } else {
-      setDraftSessions([]);
-    }
+    setDraftSessions(initialSessions);
     setFeedback(null);
-  }, [activeSchedule]);
+  }, [initialSessions]);
 
   const sessionsByDay = useMemo(() => {
     return DAYS_OF_WEEK.reduce<Record<number, ScheduleSession[]>>((acc, day) => {
@@ -201,6 +308,17 @@ export function ScheduleBuilder() {
   }
 
   async function handleRestore() {
+    if (isAllYear) {
+      setDraftSessions(initialSessions);
+      setFeedback({
+        type: 'success',
+        message: initialSessions.length
+          ? 'All-year schedule restored to last saved version.'
+          : 'All-year schedule cleared.',
+      });
+      return;
+    }
+
     if (activeSchedule) {
       setDraftSessions(sortSessions(activeSchedule.sessions));
       setFeedback({ type: 'success', message: 'Schedule restored to last saved version.' });
@@ -216,24 +334,62 @@ export function ScheduleBuilder() {
       return;
     }
 
-    const payload: Schedule = {
-      id: activeSchedule?.id ?? crypto.randomUUID(),
-      trimesterId: selectedTrimesterId,
-      groupId: selectedGroupId,
-      sessions: sortSessions(draftSessions),
-    };
-
     try {
       setIsSaving(true);
-      await DataStore.save('schedules', payload);
-      const allSchedules = await DataStore.getAll('schedules');
-      setSchedules(allSchedules);
-      const placeholderCount = await recomputePlaceholdersForSchedule(payload);
-      const noun = placeholderCount === 1 ? 'placeholder slot' : 'placeholder slots';
-      setFeedback({
-        type: 'success',
-        message: `Schedule saved. ${placeholderCount} ${noun} refreshed.`,
-      });
+      if (isAllYear) {
+        if (!selectedAcademicYear) {
+          throw new Error('Missing academic year for all-year schedule.');
+        }
+
+        const relevantTrimesters = trimestersForSelection;
+        if (!relevantTrimesters.length) {
+          throw new Error('No trimesters found for the selected academic year.');
+        }
+
+        const sortedSessions = sortSessions(draftSessions);
+        const existingSchedules = new Map(
+          schedulesForAcademicYear.map((schedule) => [schedule.trimesterId, schedule])
+        );
+
+        const payloads: Schedule[] = relevantTrimesters.map((trimester) => ({
+          id: existingSchedules.get(trimester.id)?.id ?? crypto.randomUUID(),
+          trimesterId: trimester.id,
+          groupId: selectedGroupId,
+          sessions: sortedSessions,
+        }));
+
+        await DataStore.bulkSave('schedules', payloads);
+        const allSchedules = await DataStore.getAll('schedules');
+        setSchedules(allSchedules);
+
+        let totalPlaceholders = 0;
+        for (const payload of payloads) {
+          totalPlaceholders += await recomputePlaceholdersForSchedule(payload);
+        }
+
+        const noun = totalPlaceholders === 1 ? 'placeholder slot' : 'placeholder slots';
+        setFeedback({
+          type: 'success',
+          message: `Schedule saved across ${payloads.length} trimesters. ${totalPlaceholders} ${noun} refreshed.`,
+        });
+      } else {
+        const payload: Schedule = {
+          id: activeSchedule?.id ?? crypto.randomUUID(),
+          trimesterId: selectedTrimesterId,
+          groupId: selectedGroupId,
+          sessions: sortSessions(draftSessions),
+        };
+
+        await DataStore.save('schedules', payload);
+        const allSchedules = await DataStore.getAll('schedules');
+        setSchedules(allSchedules);
+        const placeholderCount = await recomputePlaceholdersForSchedule(payload);
+        const noun = placeholderCount === 1 ? 'placeholder slot' : 'placeholder slots';
+        setFeedback({
+          type: 'success',
+          message: `Schedule saved. ${placeholderCount} ${noun} refreshed.`,
+        });
+      }
     } catch (error) {
       console.error('Failed to save schedule', error);
       setFeedback({
@@ -292,10 +448,15 @@ export function ScheduleBuilder() {
             value={selectedTrimesterId ?? ''}
             onChange={(event) => setSelectedTrimesterId(event.target.value || null)}
           >
-            {trimesters.map((trimester) => (
-              <option key={trimester.id} value={trimester.id}>
-                {trimester.name} · {trimester.academicYear}
-              </option>
+            {groupedTrimestersByYear.map((entry) => (
+              <optgroup key={entry.year} label={entry.year}>
+                <option value={`${ALL_YEAR_PREFIX}${entry.year}`}>All year · {entry.year}</option>
+                {sortTrimestersByStart(entry.trimesters).map((trimester) => (
+                  <option key={trimester.id} value={trimester.id}>
+                    {trimester.name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -332,6 +493,27 @@ export function ScheduleBuilder() {
           </select>
         </label>
       </div>
+
+      {isAllYear && selectedAcademicYear && trimestersForSelection.length > 0 && (
+        <div
+          className={`mt-6 rounded-2xl border px-4 py-3 text-sm ${
+            allYearSessionState.inconsistent
+              ? 'border-orange-400/30 bg-orange-500/10 text-orange-100'
+              : 'border-accent/20 bg-accent/5 text-accent'
+          }`}
+        >
+          {allYearSessionState.inconsistent ? (
+            <p>
+              Existing trimester schedules for {selectedAcademicYear} differ. Saving will overwrite all{' '}
+              {trimestersForSelection.length} trimesters with the plan below.
+            </p>
+          ) : (
+            <p>
+              Updates will apply to all {trimestersForSelection.length} trimesters in {selectedAcademicYear}.
+            </p>
+          )}
+        </div>
+      )}
 
       {feedback && (
         <div

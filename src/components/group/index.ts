@@ -1,0 +1,2 @@
+export { GroupManager } from './GroupManager';
+

@@ -66,6 +66,19 @@ export interface Schedule {
   sessions: ScheduleSession[];
 }
 
+export interface PlaceholderSlot {
+  id: Identifier;
+  scheduleId: Identifier;
+  groupId: Identifier;
+  trimesterId: Identifier;
+  date: string; // ISO Date (YYYY-MM-DD)
+  dayOfWeek: number; // 1 (Mon) - 7 (Sun)
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  durationMinutes: number;
+  source: 'schedule';
+}
+
 export interface Topic {
   id: Identifier;
   name: string;

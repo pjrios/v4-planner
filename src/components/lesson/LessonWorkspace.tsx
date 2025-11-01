@@ -31,6 +31,7 @@ import type {
   LessonPhaseType,
   LessonResourceAttachment,
   Level,
+  PlaceholderSlot,
   Trimester,
   Resource,
   Rubric,
@@ -64,9 +65,7 @@ type CreateLessonFormState = {
   groupId: string;
   topicId: string;
   trimesterId: string;
-  date: string;
-  startTime: string;
-  endTime: string;
+  slotId: string;
   status: Lesson['status'];
 };
 
@@ -116,10 +115,25 @@ function formatTime(time: string) {
   return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
-function formatTimeRange(lesson: Lesson) {
-  const start = formatTime(lesson.startTime);
-  const end = formatTime(lesson.endTime);
-  return `${start} – ${end}`;
+function formatTimeRange(startTime?: string | null, endTime?: string | null) {
+  const startLabel = startTime ? formatTime(startTime) : '';
+  const endLabel = endTime ? formatTime(endTime) : '';
+  const hasStart = startLabel && startLabel !== '--:--';
+  const hasEnd = endLabel && endLabel !== '--:--';
+
+  if (hasStart && hasEnd) {
+    return `${startLabel} – ${endLabel}`;
+  }
+
+  if (hasStart) {
+    return startLabel;
+  }
+
+  if (hasEnd) {
+    return endLabel;
+  }
+
+  return '--:--';
 }
 
 function parseTimeToMinutes(value: string) {
@@ -408,6 +422,7 @@ export function LessonWorkspace() {
   const [resourceLibrary, setResourceLibrary] = useState<Resource[]>([]);
   const [templateLibrary, setTemplateLibrary] = useState<ActivityTemplate[]>([]);
   const [scheduleLibrary, setScheduleLibrary] = useState<Schedule[]>([]);
+  const [placeholderLibrary, setPlaceholderLibrary] = useState<PlaceholderSlot[]>([]);
   const [trimesterLibrary, setTrimesterLibrary] = useState<Trimester[]>([]);
   const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<LessonTab>('objectives');
@@ -420,15 +435,12 @@ export function LessonWorkspace() {
   const [isCopyWizardOpen, setIsCopyWizardOpen] = useState(false);
   const [isCreateLessonOpen, setIsCreateLessonOpen] = useState(false);
   const [expandedLevelIds, setExpandedLevelIds] = useState<string[]>([]);
-  const todayIso = useMemo(() => format(new Date(), 'yyyy-MM-dd'), []);
   const [createLessonForm, setCreateLessonForm] = useState<CreateLessonFormState>({
     levelId: '',
     groupId: '',
     topicId: '',
     trimesterId: '',
-    date: todayIso,
-    startTime: '09:00',
-    endTime: '10:00',
+    slotId: '',
     status: 'planned',
   });
   const [createLessonError, setCreateLessonError] = useState<string | null>(null);
@@ -466,6 +478,7 @@ export function LessonWorkspace() {
         resources,
         templates,
         schedules,
+        placeholders,
         trimesters,
       ] = await Promise.all([
         DataStore.getAll('lessons'),
@@ -476,6 +489,7 @@ export function LessonWorkspace() {
         DataStore.getAll('resources'),
         DataStore.getAll('templates'),
         DataStore.getAll('schedules'),
+        DataStore.getAll('placeholderSlots'),
         DataStore.getAll('trimesters'),
       ]);
 
@@ -502,6 +516,7 @@ export function LessonWorkspace() {
       setResourceLibrary(resources);
       setTemplateLibrary(templates);
       setScheduleLibrary(schedules);
+      setPlaceholderLibrary(placeholders);
       setTrimesterLibrary(trimesters);
     } catch (loadError) {
       console.error('Failed to load lessons', loadError);
@@ -514,6 +529,53 @@ export function LessonWorkspace() {
   useEffect(() => {
     void loadLessons();
   }, [loadLessons]);
+
+  const placeholderMap = useMemo(
+    () => new Map(placeholderLibrary.map((slot) => [slot.id, slot])),
+    [placeholderLibrary]
+  );
+
+  const placeholderKeyMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of placeholderLibrary) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      map.set(key, slot.id);
+    }
+    return map;
+  }, [placeholderLibrary]);
+
+  const usedSlotIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const detail of lessons) {
+      const lesson = detail.lesson;
+      if (lesson.placeholderId) {
+        ids.add(lesson.placeholderId);
+        continue;
+      }
+      const fallbackKey = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const matchId = placeholderKeyMap.get(fallbackKey);
+      if (matchId) {
+        ids.add(matchId);
+      }
+    }
+    return ids;
+  }, [lessons, placeholderKeyMap]);
+
+  const resolveLessonSlot = useCallback(
+    (lesson: Lesson) => {
+      if (lesson.placeholderId) {
+        const direct = placeholderMap.get(lesson.placeholderId);
+        if (direct) {
+          return direct;
+        }
+      }
+
+      const fallbackKey = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const fallbackId = placeholderKeyMap.get(fallbackKey);
+      return fallbackId ? placeholderMap.get(fallbackId) ?? null : null;
+    },
+    [placeholderKeyMap, placeholderMap]
+  );
 
   const ensureCreateFormConsistency = useCallback(
     (draft: CreateLessonFormState) => {
@@ -557,9 +619,32 @@ export function LessonWorkspace() {
         next.trimesterId = trimesterLibrary[0]?.id ?? '';
       }
 
+      const matchingSlots = placeholderLibrary.filter(
+        (slot) => slot.groupId === next.groupId && slot.trimesterId === next.trimesterId
+      );
+      const openSlots = matchingSlots
+        .filter((slot) => !usedSlotIds.has(slot.id))
+        .sort((a, b) => {
+          if (a.date !== b.date) {
+            return a.date.localeCompare(b.date);
+          }
+          return a.startTime.localeCompare(b.startTime);
+        });
+
+      if (!openSlots.some((slot) => slot.id === next.slotId)) {
+        next.slotId = openSlots[0]?.id ?? '';
+      }
+
       return next;
     },
-    [groupLibrary, levelLibrary, topicLibrary, trimesterLibrary]
+    [
+      groupLibrary,
+      levelLibrary,
+      placeholderLibrary,
+      topicLibrary,
+      trimesterLibrary,
+      usedSlotIds,
+    ]
   );
 
   const buildInitialCreateForm = useCallback(
@@ -573,15 +658,13 @@ export function LessonWorkspace() {
         groupId: preferredGroupId ?? '',
         topicId: '',
         trimesterId: '',
-        date: todayIso,
-        startTime: '09:00',
-        endTime: '10:00',
+        slotId: '',
         status: 'planned',
       };
 
       return ensureCreateFormConsistency(base);
     },
-    [ensureCreateFormConsistency, levelLibrary, todayIso]
+    [ensureCreateFormConsistency, levelLibrary]
   );
 
   useEffect(() => {
@@ -687,9 +770,18 @@ export function LessonWorkspace() {
 
   const handleCreateLessonFieldChange = useCallback(
     <K extends keyof CreateLessonFormState>(field: K, value: CreateLessonFormState[K]) => {
-      setCreateLessonForm((current) => ensureCreateFormConsistency({ ...current, [field]: value }));
+      setCreateLessonForm((current) => {
+        const draft: CreateLessonFormState = { ...current, [field]: value };
+        if (field === 'slotId' && typeof value === 'string' && value) {
+          const slot = placeholderMap.get(value);
+          if (slot) {
+            draft.trimesterId = slot.trimesterId;
+          }
+        }
+        return ensureCreateFormConsistency(draft);
+      });
     },
-    [ensureCreateFormConsistency]
+    [ensureCreateFormConsistency, placeholderMap]
   );
 
   const openCreateLesson = useCallback(
@@ -711,7 +803,7 @@ export function LessonWorkspace() {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
 
-      const { groupId, topicId, trimesterId, date, startTime, endTime, status } = createLessonForm;
+      const { groupId, topicId, trimesterId, slotId, status } = createLessonForm;
 
       if (!groupId) {
         setCreateLessonError('Select a class group before creating a lesson.');
@@ -728,21 +820,19 @@ export function LessonWorkspace() {
         return;
       }
 
-      if (!date) {
-        setCreateLessonError('Choose a lesson date.');
+      if (!slotId) {
+        setCreateLessonError('Select a session slot for this lesson.');
         return;
       }
 
-      if (!startTime || !endTime) {
-        setCreateLessonError('Provide start and end times for the lesson.');
+      const slot = placeholderMap.get(slotId);
+      if (!slot || slot.groupId !== groupId) {
+        setCreateLessonError('Choose a session slot that matches this class group.');
         return;
       }
 
-      const startMinutes = parseTimeToMinutes(startTime);
-      const endMinutes = parseTimeToMinutes(endTime);
-
-      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
-        setCreateLessonError('End time must be after the start time.');
+      if (usedSlotIds.has(slotId)) {
+        setCreateLessonError('That session slot is already assigned to another lesson.');
         return;
       }
 
@@ -753,12 +843,13 @@ export function LessonWorkspace() {
 
       const newLesson: Lesson = {
         id: lessonId,
-        groupId,
+        groupId: slot.groupId,
         topicId,
-        trimesterId,
-        date,
-        startTime,
-        endTime,
+        trimesterId: slot.trimesterId,
+        date: slot.date,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        placeholderId: slot.id,
         status,
         preActivity: undefined,
         whileActivity: undefined,
@@ -794,9 +885,11 @@ export function LessonWorkspace() {
       createLessonForm,
       groupMap,
       levelMap,
+      placeholderMap,
       topicMap,
       rubricMap,
       resourceMap,
+      usedSlotIds,
     ]
   );
 
@@ -823,20 +916,47 @@ export function LessonWorkspace() {
     return [...trimesterLibrary].sort((a, b) => a.startDate.localeCompare(b.startDate));
   }, [trimesterLibrary]);
 
+  const availableCreateSlots = useMemo(() => {
+    if (!createLessonForm.groupId || !createLessonForm.trimesterId) {
+      return [] as PlaceholderSlot[];
+    }
+
+    return placeholderLibrary
+      .filter(
+        (slot) =>
+          slot.groupId === createLessonForm.groupId &&
+          slot.trimesterId === createLessonForm.trimesterId &&
+          !usedSlotIds.has(slot.id)
+      )
+      .sort((a, b) => {
+        if (a.date !== b.date) {
+          return a.date.localeCompare(b.date);
+        }
+        return a.startTime.localeCompare(b.startTime);
+      });
+  }, [createLessonForm.groupId, createLessonForm.trimesterId, placeholderLibrary, usedSlotIds]);
+
+  const selectedCreateSlot = createLessonForm.slotId
+    ? placeholderMap.get(createLessonForm.slotId) ?? null
+    : null;
+
   const canSubmitNewLesson = useMemo(() => {
-    const { groupId, topicId, trimesterId, date, startTime, endTime } = createLessonForm;
-    if (!groupId || !topicId || !trimesterId || !date || !startTime || !endTime) {
+    const { groupId, topicId, trimesterId, slotId } = createLessonForm;
+    if (!groupId || !topicId || !trimesterId || !slotId) {
       return false;
     }
 
-    const startMinutes = parseTimeToMinutes(startTime);
-    const endMinutes = parseTimeToMinutes(endTime);
+    const slot = placeholderMap.get(slotId);
+    if (!slot || slot.groupId !== groupId || slot.trimesterId !== trimesterId) {
+      return false;
+    }
 
-    return startMinutes != null && endMinutes != null && endMinutes > startMinutes;
-  }, [createLessonForm]);
+    return !usedSlotIds.has(slotId);
+  }, [createLessonForm, placeholderMap, usedSlotIds]);
 
   const selectedLesson = activeLessonId ? lessonById[activeLessonId] : null;
   const isDrawerOpen = Boolean(selectedLesson);
+  const selectedLessonSlot = selectedLesson ? resolveLessonSlot(selectedLesson.lesson) : null;
 
   useEffect(() => {
     if (!selectedLesson) {
@@ -1229,6 +1349,12 @@ export function LessonWorkspace() {
                           {levelLessons.map((detail) => {
                             const { lesson, topic, group } = detail;
                             const levelInfo = detail.level ?? level;
+                            const slot = resolveLessonSlot(lesson);
+                            const sessionDate = slot?.date ?? lesson.date;
+                            const sessionTime = formatTimeRange(
+                              slot?.startTime,
+                              slot?.endTime
+                            );
                             return (
                               <li key={lesson.id}>
                                 <button
@@ -1248,7 +1374,7 @@ export function LessonWorkspace() {
                                   </div>
                                   <p id={`lesson-${lesson.id}-summary`} className="text-sm text-slate-300">
                                     {group?.displayName ? `${group.displayName} · ` : ''}
-                                    {formatDate(lesson.date)} · {formatTimeRange(lesson)}
+                                    {formatDate(sessionDate)} · {sessionTime}
                                   </p>
                                   <div className="flex flex-wrap gap-2 text-xs text-slate-400">
                                     {levelInfo ? (
@@ -1307,9 +1433,9 @@ export function LessonWorkspace() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-lesson-title"
-            className="relative z-10 w-full max-w-xl rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+            className="relative z-10 w-full max-w-3xl rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
           >
-            <form onSubmit={handleCreateLessonSubmit} className="flex flex-col gap-6 p-6">
+            <form onSubmit={handleCreateLessonSubmit} className="flex flex-col gap-6 p-6 sm:p-8">
               <header className="space-y-2">
                 <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-accent">
                   <Plus className="h-4 w-4" aria-hidden />
@@ -1319,7 +1445,7 @@ export function LessonWorkspace() {
                   Create a new lesson
                 </h3>
                 <p className="text-sm text-slate-400">
-                  Choose the class, topic, and timing to add a lesson that you can refine in the workspace.
+                  Pick the class, topic, and scheduled session slot to add a lesson you can refine in the workspace.
                 </p>
               </header>
               {createLessonError ? (
@@ -1398,36 +1524,49 @@ export function LessonWorkspace() {
                     )}
                   </select>
                 </label>
-                <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Lesson date</span>
-                  <input
-                    type="date"
-                    value={createLessonForm.date}
-                    onChange={(event) => handleCreateLessonFieldChange('date', event.target.value)}
-                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                    required
-                  />
+                <label className="flex flex-col gap-2 text-sm sm:col-span-2">
+                  <span className="font-semibold text-slate-200">Session slot</span>
+                  <select
+                    value={createLessonForm.slotId}
+                    onChange={(event) => handleCreateLessonFieldChange('slotId', event.target.value)}
+                    disabled={availableCreateSlots.length === 0}
+                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                  >
+                    {availableCreateSlots.length === 0 ? (
+                      <option value="">No session slots available</option>
+                    ) : (
+                      <>
+                        <option value="">Select a session slot</option>
+                        {availableCreateSlots.map((slot) => (
+                          <option key={slot.id} value={slot.id}>
+                            {`${formatDate(slot.date)} • ${formatTimeRange(slot.startTime, slot.endTime)}`}
+                          </option>
+                        ))}
+                      </>
+                    )}
+                  </select>
                 </label>
-                <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Start time</span>
-                  <input
-                    type="time"
-                    value={createLessonForm.startTime}
-                    onChange={(event) => handleCreateLessonFieldChange('startTime', event.target.value)}
-                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                    required
-                  />
-                </label>
-                <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">End time</span>
-                  <input
-                    type="time"
-                    value={createLessonForm.endTime}
-                    onChange={(event) => handleCreateLessonFieldChange('endTime', event.target.value)}
-                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                    required
-                  />
-                </label>
+                <div className="sm:col-span-2">
+                  {selectedCreateSlot ? (
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                      <p>
+                        Scheduled for{' '}
+                        <span className="font-semibold text-white">{formatDate(selectedCreateSlot.date)}</span>{' '}
+                        at{' '}
+                        <span className="font-semibold text-white">
+                          {formatTimeRange(selectedCreateSlot.startTime, selectedCreateSlot.endTime)}
+                        </span>
+                      </p>
+                      <p className="mt-2 text-xs text-slate-400">
+                        Timing is managed by the schedule. Updates in the scheduler will keep this lesson in sync.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                      Select a scheduled session slot from your timetable to place this lesson.
+                    </p>
+                  )}
+                </div>
                 <label className="flex flex-col gap-2 text-sm">
                   <span className="font-semibold text-slate-200">Status</span>
                   <select
@@ -1482,7 +1621,8 @@ export function LessonWorkspace() {
               <div className="space-y-2">
                 <div className="flex items-center gap-3 text-sm uppercase tracking-wide text-accent/80">
                   <CalendarClock className="h-4 w-4" aria-hidden />
-                  {formatDate(selectedLesson.lesson.date)} · {formatTimeRange(selectedLesson.lesson)}
+                  {formatDate(selectedLessonSlot?.date ?? selectedLesson.lesson.date)} ·{' '}
+                  {formatTimeRange(selectedLessonSlot?.startTime, selectedLessonSlot?.endTime)}
                 </div>
                 <h3 id="lesson-drawer-title" className="text-2xl font-semibold text-white">
                   {selectedLesson.topic?.name ?? 'Untitled lesson'}
@@ -1588,6 +1728,7 @@ export function LessonWorkspace() {
                         lesson={lessonForPanels}
                         lessons={lessonById}
                         onCopyRequest={openCopyWizard}
+                        resolveSlot={resolveLessonSlot}
                       />
                     ) : null}
                   </section>
@@ -1650,6 +1791,7 @@ type ReviewPanelProps = {
   lesson: Lesson;
   lessons: Record<string, LessonDetail>;
   onCopyRequest: () => void;
+  resolveSlot: (lesson: Lesson) => PlaceholderSlot | null;
 };
 
 type CopyWizardProps = {
@@ -2183,7 +2325,7 @@ function AssessmentPanel({ lesson, rubric, rubricLibrary, onRubricChange }: Asse
   );
 }
 
-function ReviewPanel({ detail, lesson, lessons, onCopyRequest }: ReviewPanelProps) {
+function ReviewPanel({ detail, lesson, lessons, onCopyRequest, resolveSlot }: ReviewPanelProps) {
   const linkedLessons = detail.lesson.linkedLessonIds?.map((id) => lessons[id]).filter(Boolean) ?? [];
   return (
     <div className="space-y-4">
@@ -2225,22 +2367,26 @@ function ReviewPanel({ detail, lesson, lessons, onCopyRequest }: ReviewPanelProp
         </header>
         {linkedLessons.length ? (
           <ul className="mt-4 space-y-3 text-sm text-slate-200">
-            {linkedLessons.map((linked) => (
-              <li
-                key={linked.lesson.id}
-                className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3"
-              >
-                <div>
-                  <p className="font-semibold text-white">{linked.topic?.name ?? 'Linked lesson'}</p>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">
-                    {linked.group?.displayName ?? 'Unknown group'} · {formatDate(linked.lesson.date)}
-                  </p>
-                </div>
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  {LESSON_STATUS_LABELS[linked.lesson.status]}
-                </span>
-              </li>
-            ))}
+            {linkedLessons.map((linked) => {
+              const linkedSlot = resolveSlot(linked.lesson);
+              const linkedDate = formatDate(linkedSlot?.date ?? linked.lesson.date);
+              return (
+                <li
+                  key={linked.lesson.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3"
+                >
+                  <div>
+                    <p className="font-semibold text-white">{linked.topic?.name ?? 'Linked lesson'}</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-400">
+                      {linked.group?.displayName ?? 'Unknown group'} · {linkedDate}
+                    </p>
+                  </div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    {LESSON_STATUS_LABELS[linked.lesson.status]}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="mt-4 text-sm text-slate-400">
@@ -2360,7 +2506,7 @@ function CopyWizard({ isOpen, lesson, detail, lessons, scheduleMap, onClose, onC
                           {formatDate(candidate.lesson.date)}
                         </span>
                         <span className="text-xs uppercase tracking-wide text-slate-400">
-                          {formatTimeRange(candidate.lesson)}
+                        {formatTimeRange(candidate.lesson.startTime, candidate.lesson.endTime)}
                         </span>
                       </div>
                       <p className="text-xs text-slate-400">

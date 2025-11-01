@@ -114,15 +114,14 @@ type DayDetailLessonPreview = {
 type EditingLessonState = {
   lesson: Lesson;
   status: LessonStatus;
-  startTime: string;
-  endTime: string;
+  slot: PlaceholderSlot | null;
   objectives: string;
   instructions: string;
   reflection: string;
   notes: string;
 };
 
-type LessonEditField = Exclude<keyof EditingLessonState, 'lesson'>;
+type LessonEditField = Exclude<keyof EditingLessonState, 'lesson' | 'slot'>;
 
 type DayDetailTemplatePreview = {
   id: string;
@@ -218,6 +217,19 @@ function formatTimeRange(startTime: string | undefined | null, endTime: string |
   }
 
   return startLabel || endLabel || '';
+}
+
+function formatDateLabel(date: string | undefined | null) {
+  if (!date) {
+    return '';
+  }
+
+  const parsed = parseISO(date);
+  if (!isValid(parsed)) {
+    return date;
+  }
+
+  return format(parsed, 'EEE, MMM d');
 }
 
 function parseObjectivesList(value: string) {
@@ -920,6 +932,32 @@ export function CalendarWorkspace() {
             : undefined;
         maybeChanges?.unsubscribe?.(handler);
       };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
     }
 
     const fallbackCleanups: Array<() => void> = [];
@@ -1102,6 +1140,36 @@ export function CalendarWorkspace() {
   }, [calendarData.placeholders, expectedScheduleSlots]);
 
   const lessons = calendarData.lessons;
+
+  const placeholderById = useMemo(
+    () => new Map(calendarData.placeholders.map((slot) => [slot.id, slot])),
+    [calendarData.placeholders]
+  );
+
+  const placeholderKeyMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of calendarData.placeholders) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      map.set(key, slot.id);
+    }
+    return map;
+  }, [calendarData.placeholders]);
+
+  const resolveLessonSlot = useCallback(
+    (lesson: Lesson) => {
+      if (lesson.placeholderId) {
+        const direct = placeholderById.get(lesson.placeholderId);
+        if (direct) {
+          return direct;
+        }
+      }
+
+      const fallbackKey = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const fallbackId = placeholderKeyMap.get(fallbackKey);
+      return fallbackId ? placeholderById.get(fallbackId) ?? null : null;
+    },
+    [placeholderById, placeholderKeyMap]
+  );
 
   const lessonsBySlotKey = useMemo(() => {
     const map = new Map<string, Lesson[]>();
@@ -1464,7 +1532,9 @@ export function CalendarWorkspace() {
       const level = group ? levelsById.get(group.levelId) : undefined;
       const topic = topicsById.get(lesson.topicId);
       const accentColor = topic?.color ?? level?.color ?? DEFAULT_ACCENT;
-      const timeLabel = formatTimeRange(lesson.startTime, lesson.endTime) || 'Time not set';
+      const slot = resolveLessonSlot(lesson);
+      const slotTimeLabel = formatTimeRange(slot?.startTime, slot?.endTime);
+      const timeLabel = slotTimeLabel || 'Time not set';
       const levelLabel = level
         ? `Grade ${level.gradeNumber} ${level.subject}`
         : group
@@ -1488,7 +1558,7 @@ export function CalendarWorkspace() {
         timeLabel,
         statusLabel: titleCaseStatus(lesson.status),
         accentColor,
-        startSortKey: lesson.startTime ?? '99:99',
+        startSortKey: slot?.startTime ?? lesson.startTime ?? '99:99',
         deleteLabel: 'Delete lesson',
         canDelete: true,
         lesson,
@@ -1536,8 +1606,11 @@ export function CalendarWorkspace() {
         const relatedLevel = relatedGroup ? levelsById.get(relatedGroup.levelId) : level;
         const relatedTopic = topicsById.get(relatedLessonRaw.topicId);
         const relatedAccent = relatedTopic?.color ?? relatedLevel?.color ?? accentColor;
+        const relatedSlot = resolveLessonSlot(relatedLessonRaw);
         const relatedTime =
-          formatTimeRange(relatedLessonRaw.startTime, relatedLessonRaw.endTime) || 'Time not set';
+          formatTimeRange(relatedSlot?.startTime, relatedSlot?.endTime) ||
+          formatTimeRange(relatedLessonRaw.startTime, relatedLessonRaw.endTime) ||
+          'Time not set';
 
         relatedLesson = {
           id: relatedLessonRaw.id,
@@ -1609,6 +1682,7 @@ export function CalendarWorkspace() {
     lessonsBySlotKey,
     levelsById,
     placeholderMatchesFilters,
+    resolveLessonSlot,
     topicsById,
     calendarData.templates,
   ]);
@@ -1909,21 +1983,24 @@ export function CalendarWorkspace() {
     setDayActionError(null);
   }, []);
 
-  const startEditingLesson = useCallback((entry: Extract<DayDetailEntry, { kind: 'lesson' }>) => {
-    const { lesson } = entry;
-    setEditingPlaceholder(null);
-    setEditingLesson({
-      lesson,
-      status: lesson.status,
-      startTime: lesson.startTime ?? '',
-      endTime: lesson.endTime ?? '',
-      objectives: (lesson.preActivity?.objectives ?? []).join('\n'),
-      instructions: lesson.whileActivity?.instructions ?? '',
-      reflection: lesson.postActivity?.reflection ?? '',
-      notes: lesson.completionNotes ?? '',
-    });
-    setDayActionError(null);
-  }, []);
+  const startEditingLesson = useCallback(
+    (entry: Extract<DayDetailEntry, { kind: 'lesson' }>) => {
+      const { lesson } = entry;
+      const slot = resolveLessonSlot(lesson);
+      setEditingPlaceholder(null);
+      setEditingLesson({
+        lesson,
+        status: lesson.status,
+        slot,
+        objectives: (lesson.preActivity?.objectives ?? []).join('\n'),
+        instructions: lesson.whileActivity?.instructions ?? '',
+        reflection: lesson.postActivity?.reflection ?? '',
+        notes: lesson.completionNotes ?? '',
+      });
+      setDayActionError(null);
+    },
+    [resolveLessonSlot]
+  );
 
   const cancelPlaceholderEdit = useCallback(() => {
     setEditingPlaceholder(null);
@@ -1973,6 +2050,12 @@ export function CalendarWorkspace() {
         setPendingUpdateId(id);
         setDayActionError(null);
         await DataStore.update('placeholderSlots', id, { startTime, endTime });
+        const linkedLessons = calendarData.lessons.filter((lesson) => lesson.placeholderId === id);
+        await Promise.all(
+          linkedLessons.map((lesson) =>
+            DataStore.update('lessons', lesson.id, { startTime, endTime })
+          )
+        );
         setEditingPlaceholder(null);
       } catch (error) {
         console.error('Failed to update placeholder slot', error);
@@ -1981,7 +2064,7 @@ export function CalendarWorkspace() {
         setPendingUpdateId(null);
       }
     },
-    [editingPlaceholder]
+    [calendarData.lessons, editingPlaceholder]
   );
 
   const handleLessonFieldChange = useCallback(
@@ -2005,18 +2088,23 @@ export function CalendarWorkspace() {
         return;
       }
 
-      const { lesson, startTime, endTime, status, objectives, instructions, reflection, notes } = editingLesson;
+      const { lesson, slot, status, objectives, instructions, reflection, notes } = editingLesson;
 
-      if (!startTime || !endTime) {
-        setDayActionError('Start and end times are required to update this lesson.');
+      const targetDate = slot?.date ?? lesson.date;
+      const targetStart = slot?.startTime ?? lesson.startTime;
+      const targetEnd = slot?.endTime ?? lesson.endTime;
+      const targetPlaceholderId = slot?.id ?? lesson.placeholderId;
+
+      if (!targetStart || !targetEnd) {
+        setDayActionError('Assign this lesson to a scheduled session before updating it.');
         return;
       }
 
-      const startMinutes = parseTimeToMinutes(startTime);
-      const endMinutes = parseTimeToMinutes(endTime);
+      const startMinutes = parseTimeToMinutes(targetStart);
+      const endMinutes = parseTimeToMinutes(targetEnd);
 
       if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
-        setDayActionError('End time must be after the start time.');
+        setDayActionError('The linked session slot has invalid times.');
         return;
       }
 
@@ -2033,8 +2121,10 @@ export function CalendarWorkspace() {
         setPendingUpdateId(lesson.id);
         setDayActionError(null);
         await DataStore.update('lessons', lesson.id, {
-          startTime,
-          endTime,
+          date: targetDate,
+          startTime: targetStart,
+          endTime: targetEnd,
+          placeholderId: targetPlaceholderId,
           status,
           preActivity,
           whileActivity,
@@ -2612,30 +2702,31 @@ export function CalendarWorkspace() {
                                     onSubmit={handleSaveLessonEdit}
                                   >
                                     <div className="grid gap-3 sm:grid-cols-2">
-                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                                        <span>Start time</span>
-                                        <input
-                                          type="time"
-                                          value={editingLesson?.startTime ?? ''}
-                                          onChange={(event) =>
-                                            handleLessonFieldChange('startTime', event.target.value)
-                                          }
-                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                                          required
-                                        />
-                                      </label>
-                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                                        <span>End time</span>
-                                        <input
-                                          type="time"
-                                          value={editingLesson?.endTime ?? ''}
-                                          onChange={(event) =>
-                                            handleLessonFieldChange('endTime', event.target.value)
-                                          }
-                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                                          required
-                                        />
-                                      </label>
+                                      <div className="sm:col-span-2 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Session slot
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-100">
+                                          {editingLesson?.slot
+                                            ? `${formatDateLabel(editingLesson.slot.date)} • ${
+                                                formatTimeRange(
+                                                  editingLesson.slot.startTime,
+                                                  editingLesson.slot.endTime
+                                                ) || 'Time not set'
+                                              }`
+                                            : `${formatDateLabel(editingLesson?.lesson.date)} • ${
+                                                formatTimeRange(
+                                                  editingLesson?.lesson.startTime,
+                                                  editingLesson?.lesson.endTime
+                                                ) || 'Time not set'
+                                              }`}
+                                        </p>
+                                        <p className="mt-1 text-xs text-slate-400">
+                                          {editingLesson?.slot
+                                            ? 'Manage session timing from the schedule builder. Changes there will update this lesson automatically.'
+                                            : 'Link this lesson to a scheduled session to keep its timing in sync with the planner.'}
+                                        </p>
+                                      </div>
                                       <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
                                         <span>Status</span>
                                         <select

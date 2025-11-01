@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { addDays, format } from 'date-fns';
+import { addDays, format, isValid, parseISO } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -262,6 +262,8 @@ export function CalendarWorkspace() {
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<string | null>(null);
   const inFlightRangeKeys = useRef(new Set<string>());
+  const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
+  const lastAutoFocusedDate = useRef<string | null>(null);
 
   const loadStaticCollections = useCallback(async () => {
     setIsBaseLoading(true);
@@ -365,6 +367,7 @@ export function CalendarWorkspace() {
     (arg: DatesSetArg) => {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
+      currentVisibleRange.current = { start: arg.start, end: arg.end };
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
@@ -456,6 +459,64 @@ export function CalendarWorkspace() {
       setSelectedGroupId('all');
     }
   }, [calendarData.groups, selectedGroupId, selectedLevelId]);
+
+  useEffect(() => {
+    lastAutoFocusedDate.current = null;
+  }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
+
+  useEffect(() => {
+    const { lessons, placeholders } = calendarData;
+    if (!lessons.length && !placeholders.length) {
+      return;
+    }
+
+    const allDates: string[] = [];
+    for (const lesson of lessons) {
+      if (lesson.date) {
+        allDates.push(lesson.date);
+      }
+    }
+    for (const slot of placeholders) {
+      if (slot.date) {
+        allDates.push(slot.date);
+      }
+    }
+
+    if (allDates.length === 0) {
+      return;
+    }
+
+    const earliestDate = allDates.reduce<string | null>((earliest, current) => {
+      if (!earliest) {
+        return current;
+      }
+      return current < earliest ? current : earliest;
+    }, null);
+
+    if (!earliestDate || earliestDate === lastAutoFocusedDate.current) {
+      return;
+    }
+
+    const target = parseISO(earliestDate);
+    if (!isValid(target)) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    const range = currentVisibleRange.current;
+    if (range && target >= range.start && target <= range.end) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    const api = calendarRef.current?.getApi();
+    if (!api) {
+      return;
+    }
+
+    api.gotoDate(target);
+    lastAutoFocusedDate.current = earliestDate;
+  }, [calendarData]);
 
   const trimesterOptions = useMemo(
     () => [

@@ -425,6 +425,8 @@ export function CalendarWorkspace() {
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
+  const shouldAutoFocusEarliest = useRef(true);
+  const pendingAutoFocusDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
     new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
@@ -547,38 +549,58 @@ export function CalendarWorkspace() {
     []
   );
 
+  const markManualNavigation = useCallback(() => {
+    shouldAutoFocusEarliest.current = false;
+    pendingAutoFocusDate.current = null;
+  }, []);
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
+
+      if (pendingAutoFocusDate.current) {
+        const pendingDate = parseISO(pendingAutoFocusDate.current);
+        if (isValid(pendingDate) && pendingDate >= arg.start && pendingDate <= arg.end) {
+          pendingAutoFocusDate.current = null;
+        }
+      }
+
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
   );
 
   const handlePrev = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().prev();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleNext = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().next();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleToday = useCallback(() => {
+    markManualNavigation();
     const api = calendarRef.current?.getApi();
     api?.today();
-  }, []);
+  }, [markManualNavigation]);
 
-  const handleViewChange = useCallback((view: CalendarViewType) => {
-    const api = calendarRef.current?.getApi();
-    if (!api || api.view.type === view) {
-      return;
-    }
+  const handleViewChange = useCallback(
+    (view: CalendarViewType) => {
+      const api = calendarRef.current?.getApi();
+      if (!api || api.view.type === view) {
+        return;
+      }
 
-    setActiveView(view);
-    api.changeView(view);
-  }, []);
+      markManualNavigation();
+      setActiveView(view);
+      api.changeView(view);
+    },
+    [markManualNavigation]
+  );
 
   const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedTrimesterId(event.target.value);
@@ -724,14 +746,18 @@ export function CalendarWorkspace() {
         hook: typeof hooks.creating,
         subscriber: () => void
       ) => {
-        if (!hook || typeof hook.subscribe !== 'function') {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
           return;
         }
 
-        hook.subscribe(subscriber);
+        subscribeFn.call(hook, subscriber);
         fallbackCleanups.push(() => {
           try {
-            hook.unsubscribe?.(subscriber);
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
           } catch (error) {
             console.warn('Failed to remove Dexie table hook listener', error);
           }
@@ -790,6 +816,8 @@ export function CalendarWorkspace() {
 
   useEffect(() => {
     lastAutoFocusedDate.current = null;
+    shouldAutoFocusEarliest.current = true;
+    pendingAutoFocusDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
@@ -922,6 +950,9 @@ export function CalendarWorkspace() {
     }, null);
 
     if (!earliestDate || earliestDate === lastAutoFocusedDate.current) {
+      if (!shouldAutoFocusEarliest.current && earliestDate) {
+        lastAutoFocusedDate.current = earliestDate;
+      }
       return;
     }
 
@@ -942,9 +973,16 @@ export function CalendarWorkspace() {
       return;
     }
 
+    if (!shouldAutoFocusEarliest.current) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    pendingAutoFocusDate.current = earliestDate;
     api.gotoDate(target);
     void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
+    shouldAutoFocusEarliest.current = false;
   }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {

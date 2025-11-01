@@ -64,7 +64,7 @@ function formatDate(date: Date) {
   return format(date, ISO_DATE_FORMAT);
 }
 
-function computePlaceholderSlotsForSchedule(
+export function computePlaceholderSlotsForSchedule(
   schedule: Schedule,
   trimester: Trimester,
   group: Group,
@@ -170,4 +170,51 @@ export async function recomputeAllPlaceholders() {
   });
 
   return allPlaceholders.length;
+}
+
+export function getExpectedSlotsForRange(
+  schedules: Schedule[],
+  trimesters: Trimester[],
+  groups: Group[],
+  holidays: Holiday[],
+  rangeStart: Date,
+  rangeEnd: Date
+) {
+  const [startBound, endBound] =
+    rangeStart.getTime() <= rangeEnd.getTime() ? [rangeStart, rangeEnd] : [rangeEnd, rangeStart];
+  const inclusiveEnd =
+    startBound.getTime() === endBound.getTime() ? endBound : addDays(endBound, -1);
+
+  const trimesterMap = new Map(trimesters.map((trimester) => [trimester.id, trimester]));
+  const groupMap = new Map(groups.map((group) => [group.id, group]));
+
+  const holidayWindows = holidays
+    .map(mapHolidayToWindow)
+    .filter((window): window is HolidayWindow => window !== null);
+
+  const results: PlaceholderSlot[] = [];
+
+  for (const schedule of schedules) {
+    const trimester = trimesterMap.get(schedule.trimesterId);
+    const group = groupMap.get(schedule.groupId);
+
+    if (!trimester || !group) {
+      continue;
+    }
+
+    const slots = computePlaceholderSlotsForSchedule(schedule, trimester, group, holidayWindows);
+
+    for (const slot of slots) {
+      const occurrence = parseISO(slot.date);
+      if (Number.isNaN(occurrence.getTime())) {
+        continue;
+      }
+
+      if (occurrence >= startBound && occurrence <= inclusiveEnd) {
+        results.push(slot);
+      }
+    }
+  }
+
+  return results;
 }

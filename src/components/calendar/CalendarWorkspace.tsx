@@ -14,12 +14,15 @@ import type {
 } from '@fullcalendar/core';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DataStore } from '../../data/db';
+import { getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
   Group,
+  Holiday,
   Lesson,
   LessonStatus,
   Level,
   PlaceholderSlot,
+  Schedule,
   Topic,
   Trimester,
 } from '../../data/types';
@@ -54,6 +57,8 @@ type CalendarDataState = {
   trimesters: Trimester[];
   levels: Level[];
   groups: Group[];
+  schedules: Schedule[];
+  holidays: Holiday[];
   lessons: Lesson[];
   placeholders: PlaceholderSlot[];
   topics: Topic[];
@@ -266,6 +271,8 @@ export function CalendarWorkspace() {
     trimesters: [],
     levels: [],
     groups: [],
+    schedules: [],
+    holidays: [],
     lessons: [],
     placeholders: [],
     topics: [],
@@ -284,6 +291,7 @@ export function CalendarWorkspace() {
   const latestRequestedRange = useRef<string | null>(null);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
+  const [visibleRange, setVisibleRange] = useState<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
@@ -297,11 +305,13 @@ export function CalendarWorkspace() {
     setBaseError(null);
 
     try {
-      const [trimesters, groups, levels, topics] = await Promise.all([
+      const [trimesters, groups, levels, topics, schedules, holidays] = await Promise.all([
         DataStore.getAll('trimesters'),
         DataStore.getAll('groups'),
         DataStore.getAll('levels'),
         DataStore.getAll('topics'),
+        DataStore.getAll('schedules'),
+        DataStore.getAll('holidays'),
       ]);
 
       setCalendarData((current) => ({
@@ -310,6 +320,8 @@ export function CalendarWorkspace() {
         groups,
         levels,
         topics,
+        schedules,
+        holidays,
       }));
       setBaseError(null);
     } catch (error) {
@@ -321,6 +333,8 @@ export function CalendarWorkspace() {
         groups: [],
         levels: [],
         topics: [],
+        schedules: [],
+        holidays: [],
       }));
     } finally {
       setIsBaseLoading(false);
@@ -395,6 +409,7 @@ export function CalendarWorkspace() {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
+      setVisibleRange({ start: arg.start, end: arg.end });
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
@@ -508,9 +523,53 @@ export function CalendarWorkspace() {
     lastAutoFocusedDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
+  const availablePlaceholders = useMemo(() => {
+    if (!visibleRange) {
+      return calendarData.placeholders;
+    }
+
+    const expectedSlots = getExpectedSlotsForRange(
+      calendarData.schedules,
+      calendarData.trimesters,
+      calendarData.groups,
+      calendarData.holidays,
+      visibleRange.start,
+      visibleRange.end
+    );
+
+    if (!expectedSlots.length) {
+      return calendarData.placeholders;
+    }
+
+    const byKey = new Map(
+      calendarData.placeholders.map((slot) => [
+        `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`,
+        slot,
+      ])
+    );
+
+    const merged = [...calendarData.placeholders];
+    for (const slot of expectedSlots) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      if (!byKey.has(key)) {
+        merged.push(slot);
+      }
+    }
+
+    return merged;
+  }, [
+    calendarData.groups,
+    calendarData.holidays,
+    calendarData.placeholders,
+    calendarData.schedules,
+    calendarData.trimesters,
+    visibleRange,
+  ]);
+
+  const lessons = calendarData.lessons;
+
   useEffect(() => {
-    const { lessons, placeholders } = calendarData;
-    if (!lessons.length && !placeholders.length) {
+    if (!lessons.length && !availablePlaceholders.length) {
       return;
     }
 
@@ -520,7 +579,7 @@ export function CalendarWorkspace() {
         allDates.push(lesson.date);
       }
     }
-    for (const slot of placeholders) {
+    for (const slot of availablePlaceholders) {
       if (slot.date) {
         allDates.push(slot.date);
       }
@@ -560,7 +619,7 @@ export function CalendarWorkspace() {
 
     api.gotoDate(target);
     lastAutoFocusedDate.current = earliestDate;
-  }, [calendarData]);
+  }, [availablePlaceholders, lessons]);
 
   useEffect(() => {
     if (activeView === 'dayGridMonth') {
@@ -730,7 +789,7 @@ export function CalendarWorkspace() {
       topicsById
     );
 
-    const placeholdersMatchingFilters = calendarData.placeholders.filter((slot) => {
+    const placeholdersMatchingFilters = availablePlaceholders.filter((slot) => {
       if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
         return false;
       }
@@ -760,10 +819,10 @@ export function CalendarWorkspace() {
 
     return [...lessonEvents, ...placeholderEvents];
   }, [
+    availablePlaceholders,
     calendarData.groups,
     calendarData.levels,
     calendarData.lessons,
-    calendarData.placeholders,
     calendarData.topics,
     selectedGroupId,
     selectedLevelId,
@@ -782,7 +841,7 @@ export function CalendarWorkspace() {
     }
   }, [activeTooltip, filteredEvents, clearTooltip]);
 
-  const hasAnyData = calendarData.lessons.length > 0 || calendarData.placeholders.length > 0;
+  const hasAnyData = calendarData.lessons.length > 0 || availablePlaceholders.length > 0;
   const loadError = baseError ?? rangeError;
   const isLoading = (isBaseLoading || isRangeLoading) && loadError === null;
 

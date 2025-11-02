@@ -1524,15 +1524,44 @@ export function CalendarWorkspace() {
 
     const placeholdersMatchingFilters = availablePlaceholders.filter(placeholderMatchesFilters);
 
-    const placeholderEvents = createPlaceholderEvents(
-      placeholdersMatchingFilters,
-      groupsById,
-      levelsById,
-      lessonKeys
-    );
+      entries.push({
+        kind: 'placeholder',
+        id: slot.id,
+        title:
+          slot.source === 'schedule' || slot.source === 'expected'
+            ? 'Scheduled session'
+            : 'Placeholder slot',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel,
+        accentColor,
+        startSortKey: slot.startTime ?? '99:99',
+        deleteLabel: slot.source === 'schedule' ? 'Skip this session' : 'Remove placeholder',
+        canDelete: slot.source !== 'expected',
+        placeholderSource: slot.source,
+        slot,
+        relatedLesson,
+        templatePreview,
+        group: group ?? null,
+        level: level ?? null,
+        availableTopics,
+      });
+    }
 
-    return [...lessonEvents, ...placeholderEvents];
+    return entries.sort((a, b) => {
+      if (a.startSortKey !== b.startSortKey) {
+        return a.startSortKey.localeCompare(b.startSortKey);
+      }
+
+      if (a.subtitle !== b.subtitle) {
+        return a.subtitle.localeCompare(b.subtitle);
+      }
+
+      return a.title.localeCompare(b.title);
+    });
   }, [
+    activeDayDetails,
     availablePlaceholders,
     calendarData.lessons,
     groupsById,

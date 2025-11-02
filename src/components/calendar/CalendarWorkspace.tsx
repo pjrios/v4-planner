@@ -1524,6 +1524,31 @@ export function CalendarWorkspace() {
 
     const placeholdersMatchingFilters = availablePlaceholders.filter(placeholderMatchesFilters);
 
+      entries.push({
+        kind: 'placeholder',
+        id: slot.id,
+        title:
+          slot.source === 'schedule' || slot.source === 'expected'
+            ? 'Scheduled session'
+            : 'Placeholder slot',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel,
+        accentColor,
+        startSortKey: slot.startTime ?? '99:99',
+        deleteLabel: slot.source === 'schedule' ? 'Skip this session' : 'Remove placeholder',
+        canDelete: slot.source !== 'expected',
+        placeholderSource: slot.source,
+        slot,
+        relatedLesson,
+        templatePreview,
+        group: group ?? null,
+        level: level ?? null,
+        availableTopics,
+      });
+    }
+
     return entries.sort((a, b) => {
       if (a.startSortKey !== b.startSortKey) {
         return a.startSortKey.localeCompare(b.startSortKey);
@@ -2653,6 +2678,7 @@ export function CalendarWorkspace() {
           datesSet={handleDatesSet}
           events={filteredEvents}
           eventDisplay="block"
+          displayEventTime={activeView !== 'dayGridMonth'}
           eventContent={renderEventContent}
           moreLinkContent={renderMoreLinkContent}
           moreLinkClassNames={moreLinkClassNames}

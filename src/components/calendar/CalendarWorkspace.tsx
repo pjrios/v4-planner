@@ -1524,15 +1524,19 @@ export function CalendarWorkspace() {
 
     const placeholdersMatchingFilters = availablePlaceholders.filter(placeholderMatchesFilters);
 
-    const placeholderEvents = createPlaceholderEvents(
-      placeholdersMatchingFilters,
-      groupsById,
-      levelsById,
-      lessonKeys
-    );
+    return entries.sort((a, b) => {
+      if (a.startSortKey !== b.startSortKey) {
+        return a.startSortKey.localeCompare(b.startSortKey);
+      }
 
-    return [...lessonEvents, ...placeholderEvents];
+      if (a.subtitle !== b.subtitle) {
+        return a.subtitle.localeCompare(b.subtitle);
+      }
+
+      return a.title.localeCompare(b.title);
+    });
   }, [
+    activeDayDetails,
     availablePlaceholders,
     calendarData.lessons,
     groupsById,

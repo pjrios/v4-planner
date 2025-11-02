@@ -1679,7 +1679,7 @@ export function CalendarWorkspace() {
           statusLabel: titleCaseStatus(relatedLessonRaw.status),
           timeLabel: relatedTime,
           accentColor: relatedAccent,
-        } satisfies DayDetailLessonPreview;
+        } as DayDetailLessonPreview;
       }
 
       let templatePreview: DayDetailTemplatePreview | null = null;
@@ -1695,7 +1695,7 @@ export function CalendarWorkspace() {
             name: preferredTemplate.name,
             phaseLabel: formatTemplatePhase(preferredTemplate.phase),
             summary: summarizeTemplate(preferredTemplate),
-          } satisfies DayDetailTemplatePreview;
+          } as DayDetailTemplatePreview;
         }
       }
 

@@ -108,6 +108,11 @@ a {
   margin-top: 0;
 }
 
+.fc .fc-dayGridMonth-view .fc-daygrid-event .fc-event-time,
+.fc .fc-dayGridMonth-view .fc-daygrid-event .fc-event-title {
+  display: none;
+}
+
 .fc .fc-month-chip {
   display: flex;
   align-items: center;

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from 'react';
 import { addDays, format, getISODay, isValid, parseISO, startOfDay } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
 import type FullCalendarClass from '@fullcalendar/react';
@@ -7,19 +15,25 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import type {
   DatesSetArg,
+  EventClickArg,
   EventContentArg,
   EventInput,
   EventMountArg,
+  MoreLinkArg,
   MoreLinkContentArg,
 } from '@fullcalendar/core';
-import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import type { DateClickArg } from '@fullcalendar/interaction';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Trash2, X } from 'lucide-react';
 import { DataStore, db } from '../../data/db';
-import { getExpectedSlotsForRange } from '../../data/placeholders';
+import { getActiveTrimesterSpan, getExpectedSlotsForRange } from '../../data/placeholders';
 import type {
+  ActivityTemplate,
   Group,
   Holiday,
   Lesson,
+  LessonPhase,
   LessonStatus,
+  LessonPhaseType,
   Level,
   PlaceholderSlot,
   Schedule,
@@ -62,6 +76,7 @@ type CalendarDataState = {
   lessons: Lesson[];
   placeholders: PlaceholderSlot[];
   topics: Topic[];
+  templates: ActivityTemplate[];
 };
 
 const ISO_DATE_FORMAT = 'yyyy-MM-dd';
@@ -81,6 +96,92 @@ type TooltipState = {
   left: number;
   placement: TooltipPlacement;
 };
+
+type ActiveDayDetailsState = {
+  date: string;
+  initialEventId?: string | null;
+};
+
+type DayDetailLessonPreview = {
+  id: string;
+  title: string;
+  subtitle: string;
+  timeLabel: string;
+  statusLabel: string | null;
+  accentColor: string;
+};
+
+type EditingLessonState = {
+  lesson: Lesson;
+  status: LessonStatus;
+  slot: PlaceholderSlot | null;
+  objectives: string;
+  instructions: string;
+  reflection: string;
+  notes: string;
+};
+
+type LessonEditField = Exclude<keyof EditingLessonState, 'lesson' | 'slot'>;
+
+type DayDetailTemplatePreview = {
+  id: string;
+  name: string;
+  phaseLabel: string;
+  summary: string | null;
+};
+
+type DayDetailLessonEntry = {
+  kind: 'lesson';
+  id: string;
+  title: string;
+  subtitle: string;
+  levelLabel: string | null;
+  timeLabel: string;
+  statusLabel: string | null;
+  accentColor: string;
+  startSortKey: string;
+  deleteLabel: string;
+  canDelete: true;
+  lesson: Lesson;
+  objectives: string[];
+  instructions: string | null;
+  reflection: string | null;
+  completionNotes: string | null;
+};
+
+type DayDetailPlaceholderEntry = {
+  kind: 'placeholder';
+  id: string;
+  title: string;
+  subtitle: string;
+  levelLabel: string | null;
+  timeLabel: string;
+  statusLabel: string | null;
+  accentColor: string;
+  startSortKey: string;
+  deleteLabel: string;
+  canDelete: boolean;
+  placeholderSource: PlaceholderSlot['source'];
+  slot: PlaceholderSlot;
+  relatedLesson: DayDetailLessonPreview | null;
+  templatePreview: DayDetailTemplatePreview | null;
+  group: Group | null;
+  level: Level | null;
+  availableTopics: Topic[];
+};
+
+type DayDetailEntry = DayDetailLessonEntry | DayDetailPlaceholderEntry;
+
+type QuickLessonDraftState = {
+  slotId: string;
+  topicId: string;
+  status: LessonStatus;
+  focus: string;
+  activityNotes: string;
+  studySuggestion: string;
+};
+
+type QuickLessonDraftField = keyof Omit<QuickLessonDraftState, 'slotId'>;
 
 function toDateTime(date: string, time: string) {
   if (!time) {
@@ -132,6 +233,117 @@ function formatTimeRange(startTime: string | undefined | null, endTime: string |
   }
 
   return startLabel || endLabel || '';
+}
+
+function formatDateLabel(date: string | undefined | null) {
+  if (!date) {
+    return '';
+  }
+
+  const parsed = parseISO(date);
+  if (!isValid(parsed)) {
+    return date;
+  }
+
+  return format(parsed, 'EEE, MMM d');
+}
+
+function parseObjectivesList(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildPhase(
+  base: LessonPhase | undefined,
+  updates: Partial<LessonPhase>
+): LessonPhase | undefined {
+  const next: Record<string, unknown> = { ...(base ?? {}) };
+
+  for (const [key, rawValue] of Object.entries(updates)) {
+    const typedKey = key as keyof LessonPhase;
+    const value = rawValue as LessonPhase[typeof typedKey];
+
+    if (Array.isArray(value)) {
+      const filtered = value
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item): item is string => item.length > 0);
+
+      if (filtered.length > 0) {
+        next[typedKey as string] = filtered;
+      } else {
+        delete next[typedKey as string];
+      }
+      continue;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        next[typedKey as string] = trimmed;
+      } else {
+        delete next[typedKey as string];
+      }
+      continue;
+    }
+
+    if (value === undefined || value === null) {
+      delete next[typedKey as string];
+      continue;
+    }
+
+    next[typedKey as string] = value as unknown;
+  }
+
+  return Object.keys(next).length > 0 ? (next as LessonPhase) : undefined;
+}
+
+function formatTemplatePhase(phase: LessonPhaseType) {
+  switch (phase) {
+    case 'pre':
+      return 'Pre-activity';
+    case 'while':
+      return 'During lesson';
+    case 'post':
+      return 'Post-activity';
+    default:
+      return phase;
+  }
+}
+
+function summarizeTemplate(template: ActivityTemplate) {
+  const entries = Object.entries(template.fields ?? {});
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const parts = entries.slice(0, 2).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      return `${key}: ${value.slice(0, 3).join(', ')}`;
+    }
+
+    if (value && typeof value === 'object') {
+      return `${key}: …`;
+    }
+
+    return `${key}: ${String(value)}`;
+  });
+
+  return parts.join(' • ');
+}
+
+function parseTimeToMinutes(value: string | undefined | null) {
+  if (!value) {
+    return null;
+  }
+
+  const [hours, minutes] = value.split(':').map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
 }
 
 function hexToRgba(hexColor: string | undefined | null, alpha: number) {
@@ -295,6 +507,42 @@ function titleCaseStatus(status: LessonStatus) {
     .join(' ');
 }
 
+function formatOrdinalGrade(value: number | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return null;
+  }
+
+  const abs = Math.abs(value);
+  const mod10 = abs % 10;
+  const mod100 = abs % 100;
+  let suffix = 'th';
+
+  if (mod10 === 1 && mod100 !== 11) {
+    suffix = 'st';
+  } else if (mod10 === 2 && mod100 !== 12) {
+    suffix = 'nd';
+  } else if (mod10 === 3 && mod100 !== 13) {
+    suffix = 'rd';
+  }
+
+  return `${value}${suffix}`;
+}
+
+function buildLevelGroupLabel(level: Level | undefined, group: Group | undefined) {
+  const gradeLabel = formatOrdinalGrade(level?.gradeNumber ?? undefined);
+
+  if (gradeLabel) {
+    const letter = group?.letter ? ` ${group.letter}` : '';
+    return `${gradeLabel}${letter}`.trim();
+  }
+
+  if (group?.displayName) {
+    return group.displayName;
+  }
+
+  return 'Class';
+}
+
 function createLessonEvents(
   lessons: Lesson[],
   groupsById: Map<string, Group>,
@@ -330,10 +578,12 @@ function createLessonEvents(
         status: lesson.status,
         statusLabel: titleCaseStatus(lesson.status),
         groupName: group?.displayName ?? 'Unknown group',
+        levelGroupLabel: buildLevelGroupLabel(level, group),
         topicName: topic?.name ?? 'Untitled lesson',
         accentColor: baseColor,
         startTime: lesson.startTime,
         endTime: lesson.endTime,
+        date: lesson.date,
       },
     });
 
@@ -382,12 +632,14 @@ function createPlaceholderEvents(
       extendedProps: {
         kind: 'placeholder',
         groupName: group?.displayName ?? 'Unknown group',
+        levelGroupLabel: buildLevelGroupLabel(level, group),
         levelColor: accent,
         accentColor: accent,
         startTime: slot.startTime,
         endTime: slot.endTime,
         placeholderSource: slot.source,
         placeholderLabel,
+        date: slot.date,
       },
     });
   }
@@ -408,6 +660,7 @@ export function CalendarWorkspace() {
     lessons: [],
     placeholders: [],
     topics: [],
+    templates: [],
   });
   const [selectedTrimesterId, setSelectedTrimesterId] = useState<string>('all');
   const [selectedLevelId, setSelectedLevelId] = useState<string>('all');
@@ -419,31 +672,49 @@ export function CalendarWorkspace() {
   const [isRangeLoading, setIsRangeLoading] = useState(true);
   const [baseError, setBaseError] = useState<string | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
+  const [activeDayDetails, setActiveDayDetails] = useState<ActiveDayDetailsState | null>(null);
+  const [dayActionError, setDayActionError] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [editingPlaceholder, setEditingPlaceholder] = useState<
+    { id: string; startTime: string; endTime: string }
+  | null>(null);
+  const [editingLesson, setEditingLesson] = useState<EditingLessonState | null>(null);
+  const [pendingUpdateId, setPendingUpdateId] = useState<string | null>(null);
+  const [focusedDayEntryId, setFocusedDayEntryId] = useState<string | null>(null);
+  const [creatingLessonDraft, setCreatingLessonDraft] = useState<QuickLessonDraftState | null>(null);
+  const [createLessonError, setCreateLessonError] = useState<string | null>(null);
+  const [isCreatingLesson, setIsCreatingLesson] = useState(false);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
   const nextRangeRequestToken = useRef(0);
   const inFlightRangeKeys = useRef(new Set<string>());
   const currentVisibleRange = useRef<{ start: Date; end: Date } | null>(null);
   const lastAutoFocusedDate = useRef<string | null>(null);
+  const shouldAutoFocusEarliest = useRef(true);
+  const pendingAutoFocusDate = useRef<string | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const tooltipHandlersRef = useRef(
     new WeakMap<HTMLElement, { show: () => void; hide: () => void; click?: (event: MouseEvent) => void }>()
   );
   const tooltipSourceRef = useRef<HTMLElement | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<TooltipState | null>(null);
+  const dayDrawerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dayDrawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const dayEntryRefs = useRef(new Map<string, HTMLLIElement>());
 
   const loadStaticCollections = useCallback(async () => {
     setIsBaseLoading(true);
     setBaseError(null);
 
     try {
-      const [trimesters, groups, levels, topics, schedules, holidays] = await Promise.all([
+      const [trimesters, groups, levels, topics, schedules, holidays, templates] = await Promise.all([
         DataStore.getAll('trimesters'),
         DataStore.getAll('groups'),
         DataStore.getAll('levels'),
         DataStore.getAll('topics'),
         DataStore.getAll('schedules'),
         DataStore.getAll('holidays'),
+        DataStore.getAll('templates'),
       ]);
 
       setCalendarData((current) => ({
@@ -454,6 +725,7 @@ export function CalendarWorkspace() {
         topics,
         schedules,
         holidays,
+        templates,
       }));
       setBaseError(null);
     } catch (error) {
@@ -467,6 +739,7 @@ export function CalendarWorkspace() {
         topics: [],
         schedules: [],
         holidays: [],
+        templates: [],
       }));
     } finally {
       setIsBaseLoading(false);
@@ -547,38 +820,58 @@ export function CalendarWorkspace() {
     []
   );
 
+  const markManualNavigation = useCallback(() => {
+    shouldAutoFocusEarliest.current = false;
+    pendingAutoFocusDate.current = null;
+  }, []);
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       setCurrentTitle(arg.view.title);
       setActiveView(arg.view.type as CalendarViewType);
       currentVisibleRange.current = { start: arg.start, end: arg.end };
+
+      if (pendingAutoFocusDate.current) {
+        const pendingDate = parseISO(pendingAutoFocusDate.current);
+        if (isValid(pendingDate) && pendingDate >= arg.start && pendingDate <= arg.end) {
+          pendingAutoFocusDate.current = null;
+        }
+      }
+
       void prefetchRange(arg.start, arg.end);
     },
     [prefetchRange]
   );
 
   const handlePrev = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().prev();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleNext = useCallback(() => {
+    markManualNavigation();
     calendarRef.current?.getApi().next();
-  }, []);
+  }, [markManualNavigation]);
 
   const handleToday = useCallback(() => {
+    markManualNavigation();
     const api = calendarRef.current?.getApi();
     api?.today();
-  }, []);
+  }, [markManualNavigation]);
 
-  const handleViewChange = useCallback((view: CalendarViewType) => {
-    const api = calendarRef.current?.getApi();
-    if (!api || api.view.type === view) {
-      return;
-    }
+  const handleViewChange = useCallback(
+    (view: CalendarViewType) => {
+      const api = calendarRef.current?.getApi();
+      if (!api || api.view.type === view) {
+        return;
+      }
 
-    setActiveView(view);
-    api.changeView(view);
-  }, []);
+      markManualNavigation();
+      setActiveView(view);
+      api.changeView(view);
+    },
+    [markManualNavigation]
+  );
 
   const handleTrimesterChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     setSelectedTrimesterId(event.target.value);
@@ -636,6 +929,7 @@ export function CalendarWorkspace() {
           case 'topics':
           case 'schedules':
           case 'holidays':
+          case 'templates':
             shouldReloadStatic = true;
             break;
           case 'placeholderSlots':
@@ -651,7 +945,7 @@ export function CalendarWorkspace() {
         void loadStaticCollections();
       }
 
-      if (shouldRefreshRange) {
+      if (shouldReloadStatic || shouldRefreshRange) {
         lastPrefetchedRange.current = null;
         latestRequestedRange.current = null;
         const range = currentVisibleRange.current;
@@ -661,32 +955,96 @@ export function CalendarWorkspace() {
       }
     };
 
-    const changeEventSource = (db.on as unknown as {
-      changes?: {
-        subscribe?: (listener: typeof handler) => void;
-        unsubscribe?: (listener: typeof handler) => void;
-      };
-    }).changes;
+    const rawOn = db.on as unknown;
 
-    if (changeEventSource?.subscribe) {
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
       changeEventSource.subscribe(handler);
       return () => {
         changeEventSource.unsubscribe?.(handler);
       };
     }
 
-    const directOn = db.on as unknown as ((eventName: string, subscriber: typeof handler) => void) & {
-      changes?: { unsubscribe?: (listener: typeof handler) => void };
-    };
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
 
-    if (typeof directOn === 'function') {
-      directOn('changes', handler);
       return () => {
-        directOn.changes?.unsubscribe?.(handler);
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
       };
     }
 
-    return () => undefined;
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['groups', db.groups.hook],
+      ['levels', db.levels.hook],
+      ['topics', db.topics.hook],
+      ['schedules', db.schedules.hook],
+      ['holidays', db.holidays.hook],
+      ['templates', db.templates.hook],
+      ['placeholderSlots', db.placeholderSlots.hook],
+      ['lessons', db.lessons.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (
+        hook: typeof hooks.creating,
+        subscriber: () => void
+      ) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadStaticCollections, prefetchRange]);
 
   useEffect(() => {
@@ -729,37 +1087,17 @@ export function CalendarWorkspace() {
 
   useEffect(() => {
     lastAutoFocusedDate.current = null;
+    shouldAutoFocusEarliest.current = true;
+    pendingAutoFocusDate.current = null;
   }, [selectedGroupId, selectedLevelId, selectedTrimesterId]);
 
   const scheduleSpan = useMemo(() => {
-    let minStart: Date | null = null;
-    let maxEnd: Date | null = null;
-
-    for (const trimester of calendarData.trimesters) {
-      const start = parseISO(trimester.startDate);
-      const end = parseISO(trimester.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        continue;
-      }
-
-      const normalizedStart = startOfDay(start);
-      const normalizedEnd = startOfDay(end);
-
-      if (!minStart || normalizedStart < minStart) {
-        minStart = normalizedStart;
-      }
-
-      if (!maxEnd || normalizedEnd > maxEnd) {
-        maxEnd = normalizedEnd;
-      }
-    }
-
-    if (!minStart || !maxEnd || minStart > maxEnd) {
+    const span = getActiveTrimesterSpan(calendarData.trimesters);
+    if (!span) {
       return null;
     }
 
-    return { start: minStart, end: maxEnd };
+    return { start: span.start, end: span.end };
   }, [calendarData.trimesters]);
 
   const expectedScheduleSlots = useMemo(() => {
@@ -834,6 +1172,66 @@ export function CalendarWorkspace() {
 
   const lessons = calendarData.lessons;
 
+  const placeholderById = useMemo(
+    () => new Map(calendarData.placeholders.map((slot) => [slot.id, slot])),
+    [calendarData.placeholders]
+  );
+
+  const placeholderKeyMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of calendarData.placeholders) {
+      const key = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      map.set(key, slot.id);
+    }
+    return map;
+  }, [calendarData.placeholders]);
+
+  const resolveLessonSlot = useCallback(
+    (lesson: Lesson) => {
+      if (lesson.placeholderId) {
+        const direct = placeholderById.get(lesson.placeholderId);
+        if (direct) {
+          return direct;
+        }
+      }
+
+      const fallbackKey = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const fallbackId = placeholderKeyMap.get(fallbackKey);
+      return fallbackId ? placeholderById.get(fallbackId) ?? null : null;
+    },
+    [placeholderById, placeholderKeyMap]
+  );
+
+  const lessonsBySlotKey = useMemo(() => {
+    const map = new Map<string, Lesson[]>();
+    for (const lesson of calendarData.lessons) {
+      if (!lesson) continue;
+      const key = `${lesson.groupId}_${lesson.date}_${lesson.startTime}_${lesson.endTime}`;
+      const current = map.get(key);
+      if (current) {
+        current.push(lesson);
+      } else {
+        map.set(key, [lesson]);
+      }
+    }
+    return map;
+  }, [calendarData.lessons]);
+
+  const lessonsByGroupAndDate = useMemo(() => {
+    const map = new Map<string, Lesson[]>();
+    for (const lesson of calendarData.lessons) {
+      if (!lesson) continue;
+      const key = `${lesson.groupId}_${lesson.date}`;
+      const current = map.get(key);
+      if (current) {
+        current.push(lesson);
+      } else {
+        map.set(key, [lesson]);
+      }
+    }
+    return map;
+  }, [calendarData.lessons]);
+
   const earliestScheduledSlotDate = useMemo(
     () =>
       findEarliestScheduledDate(
@@ -848,6 +1246,72 @@ export function CalendarWorkspace() {
       calendarData.schedules,
       calendarData.trimesters,
     ]
+  );
+
+  const groupsById = useMemo(
+    () => new Map(calendarData.groups.map((group) => [group.id, group])),
+    [calendarData.groups]
+  );
+  const levelsById = useMemo(
+    () => new Map(calendarData.levels.map((level) => [level.id, level])),
+    [calendarData.levels]
+  );
+  const topicsById = useMemo(
+    () => new Map(calendarData.topics.map((topic) => [topic.id, topic])),
+    [calendarData.topics]
+  );
+  const selectedStatusSet = useMemo(() => new Set(selectedStatuses), [selectedStatuses]);
+
+  const lessonMatchesFilters = useCallback(
+    (lesson: Lesson) => {
+      if (selectedTrimesterId !== 'all' && lesson.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && lesson.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(lesson.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      if (selectedStatusSet.size > 0 && !selectedStatusSet.has(lesson.status)) {
+        return false;
+      }
+
+      return true;
+    },
+    [groupsById, selectedGroupId, selectedLevelId, selectedStatusSet, selectedTrimesterId]
+  );
+
+  const placeholderMatchesFilters = useCallback(
+    (slot: PlaceholderSlot) => {
+      if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
+        return false;
+      }
+
+      if (selectedGroupId !== 'all' && slot.groupId !== selectedGroupId) {
+        return false;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      if (!group) {
+        return false;
+      }
+
+      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
+        return false;
+      }
+
+      return true;
+    },
+    [groupsById, selectedGroupId, selectedLevelId, selectedTrimesterId]
   );
 
   useEffect(() => {
@@ -883,6 +1347,9 @@ export function CalendarWorkspace() {
     }, null);
 
     if (!earliestDate || earliestDate === lastAutoFocusedDate.current) {
+      if (!shouldAutoFocusEarliest.current && earliestDate) {
+        lastAutoFocusedDate.current = earliestDate;
+      }
       return;
     }
 
@@ -903,9 +1370,16 @@ export function CalendarWorkspace() {
       return;
     }
 
+    if (!shouldAutoFocusEarliest.current) {
+      lastAutoFocusedDate.current = earliestDate;
+      return;
+    }
+
+    pendingAutoFocusDate.current = earliestDate;
     api.gotoDate(target);
     void prefetchRange(target, target);
     lastAutoFocusedDate.current = earliestDate;
+    shouldAutoFocusEarliest.current = false;
   }, [availablePlaceholders, earliestScheduledSlotDate, lessons, prefetchRange]);
 
   useEffect(() => {
@@ -1032,35 +1506,7 @@ export function CalendarWorkspace() {
   }, [handleNext, handlePrev, handleToday, handleViewChange]);
 
   const filteredEvents = useMemo<EventInput[]>(() => {
-    const groupsById = new Map(calendarData.groups.map((group) => [group.id, group]));
-    const levelsById = new Map(calendarData.levels.map((level) => [level.id, level]));
-    const topicsById = new Map(calendarData.topics.map((topic) => [topic.id, topic]));
-    const activeStatuses = new Set(selectedStatuses);
-
-    const lessonsMatchingFilters = calendarData.lessons.filter((lesson) => {
-      if (selectedTrimesterId !== 'all' && lesson.trimesterId !== selectedTrimesterId) {
-        return false;
-      }
-
-      if (selectedGroupId !== 'all' && lesson.groupId !== selectedGroupId) {
-        return false;
-      }
-
-      const group = groupsById.get(lesson.groupId);
-      if (!group) {
-        return false;
-      }
-
-      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
-        return false;
-      }
-
-      if (activeStatuses.size > 0 && !activeStatuses.has(lesson.status)) {
-        return false;
-      }
-
-      return true;
-    });
+    const lessonsMatchingFilters = calendarData.lessons.filter(lessonMatchesFilters);
 
     const { events: lessonEvents } = createLessonEvents(
       lessonsMatchingFilters,
@@ -1076,26 +1522,7 @@ export function CalendarWorkspace() {
       topicsById
     );
 
-    const placeholdersMatchingFilters = availablePlaceholders.filter((slot) => {
-      if (selectedTrimesterId !== 'all' && slot.trimesterId !== selectedTrimesterId) {
-        return false;
-      }
-
-      if (selectedGroupId !== 'all' && slot.groupId !== selectedGroupId) {
-        return false;
-      }
-
-      const group = groupsById.get(slot.groupId);
-      if (!group) {
-        return false;
-      }
-
-      if (selectedLevelId !== 'all' && group.levelId !== selectedLevelId) {
-        return false;
-      }
-
-      return true;
-    });
+    const placeholdersMatchingFilters = availablePlaceholders.filter(placeholderMatchesFilters);
 
     const placeholderEvents = createPlaceholderEvents(
       placeholdersMatchingFilters,
@@ -1107,15 +1534,218 @@ export function CalendarWorkspace() {
     return [...lessonEvents, ...placeholderEvents];
   }, [
     availablePlaceholders,
-    calendarData.groups,
-    calendarData.levels,
     calendarData.lessons,
-    calendarData.topics,
-    selectedGroupId,
-    selectedLevelId,
-    selectedStatuses,
-    selectedTrimesterId,
+    groupsById,
+    lessonMatchesFilters,
+    levelsById,
+    placeholderMatchesFilters,
+    topicsById,
   ]);
+
+  const dayDetailEntries = useMemo<DayDetailEntry[] | null>(() => {
+    if (!activeDayDetails) {
+      return null;
+    }
+
+    const { date } = activeDayDetails;
+    const entries: DayDetailEntry[] = [];
+
+    for (const lesson of calendarData.lessons) {
+      if (lesson.date !== date) {
+        continue;
+      }
+
+      if (!lessonMatchesFilters(lesson)) {
+        continue;
+      }
+
+      const group = groupsById.get(lesson.groupId);
+      const level = group ? levelsById.get(group.levelId) : undefined;
+      const topic = topicsById.get(lesson.topicId);
+      const accentColor = topic?.color ?? level?.color ?? DEFAULT_ACCENT;
+      const slot = resolveLessonSlot(lesson);
+      const slotTimeLabel = formatTimeRange(slot?.startTime, slot?.endTime);
+      const timeLabel = slotTimeLabel || 'Time not set';
+      const levelLabel = level
+        ? `Grade ${level.gradeNumber} ${level.subject}`
+        : group
+        ? 'Unassigned level'
+        : null;
+      const objectives = [
+        ...(lesson.preActivity?.objectives ?? []),
+        ...(lesson.whileActivity?.objectives ?? []),
+        ...(lesson.postActivity?.objectives ?? []),
+      ];
+      const instructions = lesson.whileActivity?.instructions ?? null;
+      const reflection = lesson.postActivity?.reflection ?? null;
+      const completionNotes = lesson.completionNotes ?? null;
+
+      entries.push({
+        kind: 'lesson',
+        id: lesson.id,
+        title: topic?.name ?? 'Untitled lesson',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel: titleCaseStatus(lesson.status),
+        accentColor,
+        startSortKey: slot?.startTime ?? lesson.startTime ?? '99:99',
+        deleteLabel: 'Delete lesson',
+        canDelete: true,
+        lesson,
+        objectives,
+        instructions,
+        reflection,
+        completionNotes,
+      });
+    }
+
+    for (const slot of availablePlaceholders) {
+      if (slot.date !== date) {
+        continue;
+      }
+
+      if (!placeholderMatchesFilters(slot)) {
+        continue;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      const level = group ? levelsById.get(group.levelId) : undefined;
+      const accentColor = level?.color ?? DEFAULT_ACCENT;
+      const timeLabel = formatTimeRange(slot.startTime, slot.endTime) || 'Time not set';
+      const levelLabel = level
+        ? `Grade ${level.gradeNumber} ${level.subject}`
+        : group
+        ? 'Unassigned level'
+        : null;
+      const statusLabel =
+        slot.source === 'schedule'
+          ? 'From schedule plan'
+          : slot.source === 'expected'
+          ? 'Projected from recurrence'
+          : null;
+
+      const slotKey = `${slot.groupId}_${slot.date}_${slot.startTime}_${slot.endTime}`;
+      const matchingLessons = lessonsBySlotKey.get(slotKey) ?? [];
+      const groupDayKey = `${slot.groupId}_${slot.date}`;
+      const fallbackLessons = lessonsByGroupAndDate.get(groupDayKey) ?? [];
+      const relatedLessonRaw = matchingLessons[0] ?? fallbackLessons[0] ?? null;
+
+      let relatedLesson: DayDetailLessonPreview | null = null;
+      if (relatedLessonRaw) {
+        const relatedGroup = groupsById.get(relatedLessonRaw.groupId) ?? group;
+        const relatedLevel = relatedGroup ? levelsById.get(relatedGroup.levelId) : level;
+        const relatedTopic = topicsById.get(relatedLessonRaw.topicId);
+        const relatedAccent = relatedTopic?.color ?? relatedLevel?.color ?? accentColor;
+        const relatedSlot = resolveLessonSlot(relatedLessonRaw);
+        const relatedTime =
+          formatTimeRange(relatedSlot?.startTime, relatedSlot?.endTime) ||
+          formatTimeRange(relatedLessonRaw.startTime, relatedLessonRaw.endTime) ||
+          'Time not set';
+
+        relatedLesson = {
+          id: relatedLessonRaw.id,
+          title: relatedTopic?.name ?? 'Untitled lesson',
+          subtitle: relatedGroup?.displayName ?? 'Unknown group',
+          statusLabel: titleCaseStatus(relatedLessonRaw.status),
+          timeLabel: relatedTime,
+          accentColor: relatedAccent,
+        } satisfies DayDetailLessonPreview;
+      }
+
+      let templatePreview: DayDetailTemplatePreview | null = null;
+      if (!relatedLesson) {
+        const preferredTemplate =
+          calendarData.templates.find((template) => template.phase === 'while') ??
+          calendarData.templates[0] ??
+          null;
+
+        if (preferredTemplate) {
+          templatePreview = {
+            id: preferredTemplate.id,
+            name: preferredTemplate.name,
+            phaseLabel: formatTemplatePhase(preferredTemplate.phase),
+            summary: summarizeTemplate(preferredTemplate),
+          } satisfies DayDetailTemplatePreview;
+        }
+      }
+
+      const availableTopics = calendarData.topics
+        .filter((topic) => {
+          if (topic.trimesterId !== slot.trimesterId) {
+            return false;
+          }
+          if (!group) {
+            return true;
+          }
+          return topic.levelIds.includes(group.levelId);
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      entries.push({
+        kind: 'placeholder',
+        id: slot.id,
+        title:
+          slot.source === 'schedule' || slot.source === 'expected'
+            ? 'Scheduled session'
+            : 'Placeholder slot',
+        subtitle: group?.displayName ?? 'Unknown group',
+        levelLabel,
+        timeLabel,
+        statusLabel,
+        accentColor,
+        startSortKey: slot.startTime ?? '99:99',
+        deleteLabel: slot.source === 'schedule' ? 'Skip this session' : 'Remove placeholder',
+        canDelete: slot.source !== 'expected',
+        placeholderSource: slot.source,
+        slot,
+        relatedLesson,
+        templatePreview,
+        group: group ?? null,
+        level: level ?? null,
+        availableTopics,
+      });
+    }
+
+    return entries.sort((a, b) => {
+      if (a.startSortKey !== b.startSortKey) {
+        return a.startSortKey.localeCompare(b.startSortKey);
+      }
+
+      if (a.subtitle !== b.subtitle) {
+        return a.subtitle.localeCompare(b.subtitle);
+      }
+
+      return a.title.localeCompare(b.title);
+    });
+  }, [
+    activeDayDetails,
+    availablePlaceholders,
+    calendarData.lessons,
+    groupsById,
+    lessonMatchesFilters,
+    lessonsByGroupAndDate,
+    lessonsBySlotKey,
+    levelsById,
+    placeholderMatchesFilters,
+    resolveLessonSlot,
+    topicsById,
+    calendarData.templates,
+    calendarData.topics,
+  ]);
+
+  const displayedDayEntries = useMemo<DayDetailEntry[]>(() => {
+    if (!dayDetailEntries) {
+      return [];
+    }
+
+    if (!focusedDayEntryId) {
+      return dayDetailEntries;
+    }
+
+    const match = dayDetailEntries.find((entry) => entry.id === focusedDayEntryId);
+    return match ? [match] : dayDetailEntries;
+  }, [dayDetailEntries, focusedDayEntryId]);
 
   useEffect(() => {
     if (!activeTooltip) {
@@ -1127,6 +1757,72 @@ export function CalendarWorkspace() {
       clearTooltip();
     }
   }, [activeTooltip, filteredEvents, clearTooltip]);
+
+  useEffect(() => {
+    if (!activeDayDetails) {
+      return;
+    }
+
+    const targetId = focusedDayEntryId ?? activeDayDetails.initialEventId ?? null;
+    if (!targetId) {
+      return;
+    }
+
+    const container = dayDrawerScrollRef.current;
+    const element = dayEntryRefs.current.get(targetId);
+    if (!container || !element) {
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const delta = elementRect.top - containerRect.top;
+    const targetScroll =
+      container.scrollTop + delta - container.clientHeight / 2 + element.clientHeight / 2;
+    const nextPosition = Math.max(0, targetScroll);
+
+    if (typeof container.scrollTo === 'function') {
+      container.scrollTo({ top: nextPosition, behavior: 'smooth' });
+    } else {
+      container.scrollTop = nextPosition;
+    }
+  }, [activeDayDetails, displayedDayEntries, focusedDayEntryId]);
+
+  const isSingleEntryFocused = useMemo(() => {
+    if (!dayDetailEntries) {
+      return false;
+    }
+
+    if (!focusedDayEntryId) {
+      return false;
+    }
+
+    if (!dayDetailEntries.some((entry) => entry.id === focusedDayEntryId)) {
+      return false;
+    }
+
+    return dayDetailEntries.length > 1 && displayedDayEntries.length === 1;
+  }, [dayDetailEntries, displayedDayEntries, focusedDayEntryId]);
+
+  const totalDayEntries = dayDetailEntries?.length ?? 0;
+
+  useEffect(() => {
+    if (activeDayDetails && dayDrawerCloseButtonRef.current) {
+      dayDrawerCloseButtonRef.current.focus();
+    }
+  }, [activeDayDetails]);
+
+  useEffect(() => {
+    if (!activeDayDetails) {
+      setEditingPlaceholder(null);
+      setEditingLesson(null);
+      setPendingUpdateId(null);
+      setDayActionError(null);
+      setCreatingLessonDraft(null);
+      setCreateLessonError(null);
+      setIsCreatingLesson(false);
+    }
+  }, [activeDayDetails]);
 
   const hasAnyData = calendarData.lessons.length > 0 || availablePlaceholders.length > 0;
   const loadError = baseError ?? rangeError;
@@ -1142,6 +1838,7 @@ export function CalendarWorkspace() {
       const kind = (event.extendedProps.kind as string | undefined) ?? 'lesson';
       const lessonStatusLabel = event.extendedProps.statusLabel as string | undefined;
       const groupName = event.extendedProps.groupName as string | undefined;
+      const levelGroupLabel = event.extendedProps.levelGroupLabel as string | undefined;
       const topicName = event.extendedProps.topicName as string | undefined;
       const startTime = event.extendedProps.startTime as string | undefined;
       const endTime = event.extendedProps.endTime as string | undefined;
@@ -1154,12 +1851,13 @@ export function CalendarWorkspace() {
       const accentColor =
         (event.extendedProps.accentColor as string | undefined) ?? event.backgroundColor ?? DEFAULT_ACCENT;
 
-      const label =
+      const monthLabel = levelGroupLabel ?? groupName ?? (kind === 'lesson' ? 'Lesson' : 'Session');
+      const detailLabel =
         kind === 'lesson'
           ? `${groupName ?? 'Lesson'}${topicName ? ` • ${topicName}` : ''}`
           : `${groupName ?? 'Group'} • ${placeholderLabel ?? 'Slot'}`;
 
-      const tooltipParts = [label];
+      const tooltipParts = [detailLabel];
       if (timeLabel) {
         tooltipParts.push(timeLabel);
       }
@@ -1175,8 +1873,7 @@ export function CalendarWorkspace() {
       const textColor = event.textColor ?? '#e2e8f0';
 
       const indicatorHtml = `<span class="fc-month-chip-indicator" style="background:${accentColor};"></span>`;
-      const labelHtml = `<span class="fc-month-chip-label">${escapeHtml(label)}</span>`;
-      const timeHtml = timeLabel ? `<span class="fc-month-chip-time">${escapeHtml(timeLabel)}</span>` : '';
+      const labelHtml = `<span class="fc-month-chip-label">${escapeHtml(monthLabel)}</span>`;
       const statusHtml =
         kind === 'lesson'
           ? lessonStatusLabel
@@ -1198,7 +1895,7 @@ export function CalendarWorkspace() {
         );
       }
 
-      const html = `<div class="${chipClasses.join(' ')}" style="background:${backgroundColor};border-color:${borderColor};color:${textColor};" title="${escapeHtml(tooltip)}">${indicatorHtml}${labelHtml}${timeHtml}${statusHtml}</div>`;
+      const html = `<div class="${chipClasses.join(' ')}" style="background:${backgroundColor};border-color:${borderColor};color:${textColor};" title="${escapeHtml(tooltip)}">${indicatorHtml}${labelHtml}${statusHtml}</div>`;
 
       return { html };
     },
@@ -1214,6 +1911,418 @@ export function CalendarWorkspace() {
       return `+${arg.num} more`;
     },
     [activeView]
+  );
+
+  const openDayDetails = useCallback((inputDate: string | undefined, eventId?: string | null) => {
+    if (!inputDate) {
+      return;
+    }
+
+    let normalized = inputDate.slice(0, 10);
+    const parsed = parseISO(inputDate);
+    if (isValid(parsed)) {
+      normalized = format(startOfDay(parsed), ISO_DATE_FORMAT);
+    }
+
+    setActiveDayDetails({ date: normalized, initialEventId: eventId ?? null });
+    setDayActionError(null);
+    setPendingDeleteId(null);
+    setFocusedDayEntryId(eventId ?? null);
+    dayEntryRefs.current.clear();
+  }, []);
+
+  const closeDayDetails = useCallback(() => {
+    setActiveDayDetails(null);
+    setDayActionError(null);
+    setPendingDeleteId(null);
+    setFocusedDayEntryId(null);
+    dayEntryRefs.current.clear();
+  }, []);
+
+  const handleEventClick = useCallback(
+    (arg: EventClickArg) => {
+      arg.jsEvent.preventDefault();
+      clearTooltip();
+      const dateProp = (arg.event.extendedProps.date as string | undefined) ?? arg.event.startStr;
+      openDayDetails(dateProp, arg.event.id);
+    },
+    [clearTooltip, openDayDetails]
+  );
+
+  const handleDateClick = useCallback(
+    (arg: DateClickArg) => {
+      markManualNavigation();
+      const isoDate = format(startOfDay(arg.date), ISO_DATE_FORMAT);
+      openDayDetails(isoDate);
+    },
+    [markManualNavigation, openDayDetails]
+  );
+
+  const handleMoreLinkClick = useCallback(
+    (arg: MoreLinkArg) => {
+      clearTooltip();
+      const isoDate = format(startOfDay(arg.date), ISO_DATE_FORMAT);
+      openDayDetails(isoDate);
+      return 'none';
+    },
+    [clearTooltip, openDayDetails]
+  );
+
+  const handleDeleteEntry = useCallback(
+    async (entry: DayDetailEntry) => {
+      if (!entry.canDelete) {
+        return;
+      }
+
+      const confirmationMessage =
+        entry.kind === 'lesson'
+          ? 'Delete this lesson? This action cannot be undone.'
+          : entry.placeholderSource === 'schedule'
+          ? 'Skip this scheduled session? It will no longer appear on the calendar.'
+          : 'Remove this placeholder slot?';
+
+      const confirmed = window.confirm(confirmationMessage);
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        setPendingDeleteId(entry.id);
+        setDayActionError(null);
+
+        if (entry.kind === 'lesson') {
+          await DataStore.remove('lessons', entry.id);
+        } else {
+          await DataStore.remove('placeholderSlots', entry.id);
+        }
+      } catch (error) {
+        console.error('Failed to delete calendar entry', error);
+        setDayActionError('Unable to delete this entry. Please try again.');
+      } finally {
+        setPendingDeleteId(null);
+      }
+    },
+    []
+  );
+
+  const openLessonWorkspace = useCallback(
+    (lessonId?: string) => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('planner:navigate', { detail: { workspace: 'lessons' } })
+      );
+
+      if (lessonId) {
+        window.dispatchEvent(new CustomEvent('planner:openLesson', { detail: { lessonId } }));
+      }
+
+      closeDayDetails();
+    },
+    [closeDayDetails]
+  );
+
+  const startEditingPlaceholder = useCallback((entry: Extract<DayDetailEntry, { kind: 'placeholder' }>) => {
+    setEditingPlaceholder({
+      id: entry.id,
+      startTime: entry.slot.startTime ?? '',
+      endTime: entry.slot.endTime ?? '',
+    });
+    setEditingLesson(null);
+    setCreatingLessonDraft(null);
+    setCreateLessonError(null);
+    setDayActionError(null);
+  }, []);
+
+  const startEditingLesson = useCallback(
+    (entry: Extract<DayDetailEntry, { kind: 'lesson' }>) => {
+      const { lesson } = entry;
+      const slot = resolveLessonSlot(lesson);
+      setEditingPlaceholder(null);
+      setEditingLesson({
+        lesson,
+        status: lesson.status,
+        slot,
+        objectives: (lesson.preActivity?.objectives ?? []).join('\n'),
+        instructions: lesson.whileActivity?.instructions ?? '',
+        reflection: lesson.postActivity?.reflection ?? '',
+        notes: lesson.completionNotes ?? '',
+      });
+      setCreatingLessonDraft(null);
+      setCreateLessonError(null);
+      setDayActionError(null);
+    },
+    [resolveLessonSlot]
+  );
+
+  const cancelPlaceholderEdit = useCallback(() => {
+    setEditingPlaceholder(null);
+  }, []);
+
+  const cancelLessonEdit = useCallback(() => {
+    setEditingLesson(null);
+    setDayActionError(null);
+  }, []);
+
+  const startCreatingLessonForSlot = useCallback(
+    (entry: DayDetailPlaceholderEntry) => {
+      const defaultTopicId = entry.availableTopics[0]?.id ?? '';
+      setCreatingLessonDraft({
+        slotId: entry.id,
+        topicId: defaultTopicId,
+        status: 'planned',
+        focus: '',
+        activityNotes: entry.templatePreview?.summary ?? '',
+        studySuggestion: '',
+      });
+      setEditingPlaceholder(null);
+      setEditingLesson(null);
+      setDayActionError(null);
+      setCreateLessonError(null);
+    },
+    []
+  );
+
+  const cancelCreatingLesson = useCallback(() => {
+    setCreatingLessonDraft(null);
+    setCreateLessonError(null);
+    setIsCreatingLesson(false);
+  }, []);
+
+  const handleCreateLessonFieldChange = useCallback(
+    <K extends QuickLessonDraftField>(field: K, value: QuickLessonDraftState[K]) => {
+      setCreatingLessonDraft((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const handleSaveQuickLesson = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!creatingLessonDraft) {
+        return;
+      }
+
+      const slot = availablePlaceholders.find((placeholder) => placeholder.id === creatingLessonDraft.slotId);
+      if (!slot) {
+        setCreateLessonError('This session is no longer available. Refresh the calendar and try again.');
+        return;
+      }
+
+      if (calendarData.lessons.some((lesson) => lesson.placeholderId === slot.id)) {
+        setCreateLessonError('A lesson is already linked to this session.');
+        return;
+      }
+
+      const group = groupsById.get(slot.groupId);
+      if (!group) {
+        setCreateLessonError('Unable to determine the class group for this session.');
+        return;
+      }
+
+      const topicId = creatingLessonDraft.topicId;
+      if (!topicId) {
+        setCreateLessonError('Select a topic before saving this lesson.');
+        return;
+      }
+
+      const topic = topicsById.get(topicId);
+      if (!topic) {
+        setCreateLessonError('Choose a valid topic before saving this lesson.');
+        return;
+      }
+
+      const status = creatingLessonDraft.status;
+      const objectiveLines = creatingLessonDraft.focus
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const instructions = creatingLessonDraft.activityNotes.trim();
+      const studySuggestion = creatingLessonDraft.studySuggestion.trim();
+
+      const lessonId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `lesson_${Date.now()}`;
+
+      const newLesson: Lesson = {
+        id: lessonId,
+        groupId: slot.groupId,
+        topicId,
+        trimesterId: slot.trimesterId,
+        date: slot.date,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        placeholderId: slot.id,
+        status,
+        preActivity: objectiveLines.length > 0 ? { objectives: objectiveLines } : undefined,
+        whileActivity: instructions ? { instructions } : undefined,
+        postActivity: studySuggestion ? { reflection: studySuggestion } : undefined,
+        resourceIds: [],
+        resourceAttachments: [],
+        linkedLessonIds: [],
+        completionNotes: studySuggestion || undefined,
+      };
+
+      try {
+        setIsCreatingLesson(true);
+        setCreateLessonError(null);
+        await DataStore.save('lessons', newLesson);
+        setCreatingLessonDraft(null);
+        setFocusedDayEntryId(newLesson.id);
+      } catch (error) {
+        console.error('Failed to create lesson from calendar', error);
+        setCreateLessonError('Unable to create the lesson. Please try again.');
+      } finally {
+        setIsCreatingLesson(false);
+      }
+    },
+    [
+      availablePlaceholders,
+      calendarData.lessons,
+      creatingLessonDraft,
+      groupsById,
+      topicsById,
+    ]
+  );
+
+  const handlePlaceholderFieldChange = useCallback(
+    (field: 'startTime' | 'endTime', value: string) => {
+      setEditingPlaceholder((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const handleSavePlaceholderEdit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!editingPlaceholder) {
+        return;
+      }
+
+      const { id, startTime, endTime } = editingPlaceholder;
+
+      if (!startTime || !endTime) {
+        setDayActionError('Start and end times are required to update this session.');
+        return;
+      }
+
+      const startMinutes = parseTimeToMinutes(startTime);
+      const endMinutes = parseTimeToMinutes(endTime);
+
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
+        setDayActionError('End time must be after the start time.');
+        return;
+      }
+
+      try {
+        setPendingUpdateId(id);
+        setDayActionError(null);
+        await DataStore.update('placeholderSlots', id, { startTime, endTime });
+        const linkedLessons = calendarData.lessons.filter((lesson) => lesson.placeholderId === id);
+        await Promise.all(
+          linkedLessons.map((lesson) =>
+            DataStore.update('lessons', lesson.id, { startTime, endTime })
+          )
+        );
+        setEditingPlaceholder(null);
+      } catch (error) {
+        console.error('Failed to update placeholder slot', error);
+        setDayActionError('Unable to update this session. Please try again.');
+      } finally {
+        setPendingUpdateId(null);
+      }
+    },
+    [calendarData.lessons, editingPlaceholder]
+  );
+
+  const handleLessonFieldChange = useCallback(
+    <K extends LessonEditField>(field: K, value: EditingLessonState[K]) => {
+      setEditingLesson((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const handleSaveLessonEdit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+
+      if (!editingLesson) {
+        return;
+      }
+
+      const { lesson, slot, status, objectives, instructions, reflection, notes } = editingLesson;
+
+      const targetDate = slot?.date ?? lesson.date;
+      const targetStart = slot?.startTime ?? lesson.startTime;
+      const targetEnd = slot?.endTime ?? lesson.endTime;
+      const targetPlaceholderId = slot?.id ?? lesson.placeholderId;
+
+      if (!targetStart || !targetEnd) {
+        setDayActionError('Assign this lesson to a scheduled session before updating it.');
+        return;
+      }
+
+      const startMinutes = parseTimeToMinutes(targetStart);
+      const endMinutes = parseTimeToMinutes(targetEnd);
+
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
+        setDayActionError('The linked session slot has invalid times.');
+        return;
+      }
+
+      const objectiveList = parseObjectivesList(objectives);
+      const trimmedInstructions = instructions.trim();
+      const trimmedReflection = reflection.trim();
+      const trimmedNotes = notes.trim();
+
+      const preActivity = buildPhase(lesson.preActivity, { objectives: objectiveList });
+      const whileActivity = buildPhase(lesson.whileActivity, { instructions: trimmedInstructions });
+      const postActivity = buildPhase(lesson.postActivity, { reflection: trimmedReflection });
+
+      try {
+        setPendingUpdateId(lesson.id);
+        setDayActionError(null);
+        await DataStore.update('lessons', lesson.id, {
+          date: targetDate,
+          startTime: targetStart,
+          endTime: targetEnd,
+          placeholderId: targetPlaceholderId,
+          status,
+          preActivity,
+          whileActivity,
+          postActivity,
+          completionNotes: trimmedNotes ? trimmedNotes : undefined,
+        });
+        setEditingLesson(null);
+      } catch (error) {
+        console.error('Failed to update lesson', error);
+        setDayActionError('Unable to update this lesson. Please try again.');
+      } finally {
+        setPendingUpdateId(null);
+      }
+    },
+    [editingLesson]
   );
 
   const handleEventDidMount = useCallback(
@@ -1540,11 +2649,15 @@ export function CalendarWorkspace() {
           datesSet={handleDatesSet}
           events={filteredEvents}
           eventDisplay="block"
+          displayEventTime={activeView !== 'dayGridMonth'}
           eventContent={renderEventContent}
           moreLinkContent={renderMoreLinkContent}
           moreLinkClassNames={moreLinkClassNames}
           eventDidMount={handleEventDidMount}
           eventWillUnmount={handleEventWillUnmount}
+          eventClick={handleEventClick}
+          dateClick={handleDateClick}
+          moreLinkClick={handleMoreLinkClick}
         />
         {activeTooltip ? (
           <div
@@ -1591,6 +2704,594 @@ export function CalendarWorkspace() {
           </div>
         ) : null}
       </div>
+      {activeDayDetails ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center px-4 py-10 sm:px-6">
+          <button
+            type="button"
+            aria-label="Close day details"
+            className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+            onClick={closeDayDetails}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="calendar-day-drawer-title"
+            className="relative z-10 flex w-full max-w-3xl max-h-[calc(100vh-4rem)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-6 border-b border-white/10 p-6">
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 text-sm uppercase tracking-wide text-accent/80">
+                  <CalendarDays className="h-4 w-4" aria-hidden />
+                  {(() => {
+                    const parsed = parseISO(activeDayDetails.date);
+                    return isValid(parsed)
+                      ? format(parsed, 'EEEE, MMMM d, yyyy')
+                      : activeDayDetails.date;
+                  })()}
+                </div>
+                <h3 id="calendar-day-drawer-title" className="text-2xl font-semibold text-white">
+                  Day overview
+                </h3>
+                <p className="text-sm text-slate-400">
+                  Review lessons and scheduled sessions for this day. Delete options remove only the
+                  selected occurrence.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                {isSingleEntryFocused ? (
+                  <button
+                    type="button"
+                    onClick={() => setFocusedDayEntryId(null)}
+                    className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  >
+                    Show full day
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={closeDayDetails}
+                  ref={dayDrawerCloseButtonRef}
+                  className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:border-white/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                  <span className="sr-only">Close</span>
+                </button>
+              </div>
+            </div>
+            <div ref={dayDrawerScrollRef} className="flex-1 overflow-y-auto p-6">
+              {dayActionError ? (
+                <p className="mb-4 rounded-2xl bg-rose-500/10 p-4 text-sm text-rose-200 ring-1 ring-rose-500/40">
+                  {dayActionError}
+                </p>
+              ) : null}
+              {displayedDayEntries.length > 0 ? (
+                <ul className="flex flex-col gap-4">
+                  {displayedDayEntries.map((entry) => {
+                    const isHighlighted =
+                      (activeDayDetails.initialEventId &&
+                        activeDayDetails.initialEventId === entry.id) ||
+                      (focusedDayEntryId ? focusedDayEntryId === entry.id : false);
+                    const isEditingPlaceholder =
+                      entry.kind === 'placeholder' && editingPlaceholder?.id === entry.id;
+                    const isEditingLesson =
+                      entry.kind === 'lesson' && editingLesson?.lesson.id === entry.id;
+                    return (
+                      <li
+                        key={`${entry.kind}_${entry.id}`}
+                        ref={(element) => {
+                          if (!element) {
+                            dayEntryRefs.current.delete(entry.id);
+                          } else {
+                            dayEntryRefs.current.set(entry.id, element);
+                          }
+                        }}
+                      >
+                        <article
+                          className={`group relative overflow-hidden rounded-2xl border bg-white/5 p-4 transition hover:border-accent/50 ${
+                            isHighlighted
+                              ? 'border-accent/70 bg-accent/10 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
+                              : 'border-white/10'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                            <div className="flex items-start gap-4 md:flex-1">
+                              <span
+                                aria-hidden
+                                className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white"
+                                style={{ backgroundColor: entry.accentColor }}
+                              >
+                                {entry.kind === 'lesson' ? 'L' : 'S'}
+                              </span>
+                              <div className="flex-1 space-y-3">
+                                <div>
+                                  <p className="text-sm font-semibold uppercase tracking-wide text-accent/80">
+                                    {entry.kind === 'lesson' ? 'Lesson' : 'Session'}
+                                  </p>
+                                  <h4 className="text-lg font-semibold text-white">{entry.title}</h4>
+                                  <p className="text-sm text-slate-300">{entry.subtitle}</p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-xs text-slate-300">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                    <Clock className="h-3.5 w-3.5" aria-hidden />
+                                    {entry.timeLabel}
+                                  </span>
+                                  {entry.levelLabel ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                      {entry.levelLabel}
+                                    </span>
+                                  ) : null}
+                                  {entry.statusLabel ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                      {entry.statusLabel}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {entry.kind === 'lesson' && !isEditingLesson ? (
+                                  <div className="space-y-3">
+                                    {entry.objectives.length ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Objectives
+                                        </p>
+                                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
+                                          {entry.objectives.map((objective, index) => (
+                                            <li key={`${entry.id}_objective_${index}`}>{objective}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                    {entry.instructions ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          During class
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.instructions}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {entry.reflection ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Reflection & wrap-up
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.reflection}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {entry.completionNotes ? (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Notes
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-line text-sm text-slate-200">
+                                          {entry.completionNotes}
+                                        </p>
+                                      </div>
+                                    ) : null}
+                                    {!entry.objectives.length &&
+                                    !entry.instructions &&
+                                    !entry.reflection &&
+                                    !entry.completionNotes ? (
+                                      <div className="rounded-2xl border border-dashed border-white/15 bg-slate-900/40 p-4 text-sm text-slate-400">
+                                        No lesson content captured yet.
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {entry.kind === 'lesson' && isEditingLesson ? (
+                                  <form
+                                    className="space-y-4 rounded-2xl border border-white/10 bg-slate-900/60 p-4"
+                                    onSubmit={handleSaveLessonEdit}
+                                  >
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <div className="sm:col-span-2 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                          Session slot
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-100">
+                                          {editingLesson?.slot
+                                            ? `${formatDateLabel(editingLesson.slot.date)} • ${
+                                                formatTimeRange(
+                                                  editingLesson.slot.startTime,
+                                                  editingLesson.slot.endTime
+                                                ) || 'Time not set'
+                                              }`
+                                            : `${formatDateLabel(editingLesson?.lesson.date)} • ${
+                                                formatTimeRange(
+                                                  editingLesson?.lesson.startTime,
+                                                  editingLesson?.lesson.endTime
+                                                ) || 'Time not set'
+                                              }`}
+                                        </p>
+                                        <p className="mt-1 text-xs text-slate-400">
+                                          {editingLesson?.slot
+                                            ? 'Manage session timing from the schedule builder. Changes there will update this lesson automatically.'
+                                            : 'Link this lesson to a scheduled session to keep its timing in sync with the planner.'}
+                                        </p>
+                                      </div>
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>Status</span>
+                                        <select
+                                          value={editingLesson?.status ?? 'planned'}
+                                          onChange={(event) =>
+                                            handleLessonFieldChange('status', event.target.value as LessonStatus)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        >
+                                          {LESSON_STATUS_OPTIONS.map((option) => (
+                                            <option key={option.id} value={option.id}>
+                                              {option.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                    </div>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Objectives</span>
+                                      <textarea
+                                        value={editingLesson?.objectives ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('objectives', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="List objectives separated by new lines or commas"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>During class</span>
+                                      <textarea
+                                        value={editingLesson?.instructions ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('instructions', event.target.value)
+                                        }
+                                        rows={4}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Outline the main activities for this session"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Reflection & wrap-up</span>
+                                      <textarea
+                                        value={editingLesson?.reflection ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('reflection', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Capture closure prompts or homework reminders"
+                                      />
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Notes</span>
+                                      <textarea
+                                        value={editingLesson?.notes ?? ''}
+                                        onChange={(event) =>
+                                          handleLessonFieldChange('notes', event.target.value)
+                                        }
+                                        rows={3}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                        placeholder="Record progress updates or follow-ups"
+                                      />
+                                    </label>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="submit"
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent transition hover:border-accent/60 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                        disabled={pendingUpdateId === entry.id}
+                                      >
+                                        {pendingUpdateId === entry.id ? 'Saving…' : 'Save lesson'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelLessonEdit}
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </form>
+                                ) : null}
+                                {entry.kind === 'placeholder' && entry.relatedLesson ? (
+                                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-300">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                      Linked lesson
+                                    </p>
+                                    <p className="mt-1 text-base font-semibold text-white">
+                                      {entry.relatedLesson.title}
+                                    </p>
+                                    <p className="text-xs text-slate-400">{entry.relatedLesson.subtitle}</p>
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                        <Clock className="h-3.5 w-3.5" aria-hidden />
+                                        {entry.relatedLesson.timeLabel}
+                                      </span>
+                                      {entry.relatedLesson.statusLabel ? (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1">
+                                          {entry.relatedLesson.statusLabel}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ) : null}
+                                {entry.kind === 'placeholder' && !entry.relatedLesson && entry.templatePreview ? (
+                                  <div className="rounded-2xl border border-dashed border-white/15 bg-slate-900/40 p-4 text-sm text-slate-300">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                      Suggested template
+                                    </p>
+                                    <p className="mt-1 text-base font-semibold text-white">
+                                      {entry.templatePreview.name}
+                                    </p>
+                                    <p className="text-xs text-slate-400">{entry.templatePreview.phaseLabel}</p>
+                                    {entry.templatePreview.summary ? (
+                                      <p className="mt-2 text-xs text-slate-400">
+                                        {entry.templatePreview.summary}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {entry.kind === 'placeholder' && isEditingPlaceholder ? (
+                                  <form
+                                    className="space-y-3 rounded-2xl border border-white/10 bg-slate-900/60 p-4"
+                                    onSubmit={handleSavePlaceholderEdit}
+                                  >
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>Start time</span>
+                                        <input
+                                          type="time"
+                                          value={editingPlaceholder?.startTime ?? ''}
+                                          onChange={(event) =>
+                                            handlePlaceholderFieldChange('startTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                        <span>End time</span>
+                                        <input
+                                          type="time"
+                                          value={editingPlaceholder?.endTime ?? ''}
+                                          onChange={(event) =>
+                                            handlePlaceholderFieldChange('endTime', event.target.value)
+                                          }
+                                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                          required
+                                        />
+                                      </label>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="submit"
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent transition hover:border-accent/60 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                        disabled={pendingUpdateId === entry.id}
+                                      >
+                                        {pendingUpdateId === entry.id ? 'Saving…' : 'Save session'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelPlaceholderEdit}
+                                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/50"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </form>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 md:flex-col md:items-end md:justify-center">
+                              {entry.kind === 'lesson' && !isEditingLesson ? (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingLesson(entry)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/50 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
+                                >
+                                  Edit lesson
+                                </button>
+                              ) : null}
+                              {entry.kind === 'lesson' && isEditingLesson ? (
+                                <span className="text-xs font-semibold uppercase tracking-wide text-accent/80">
+                                  Editing…
+                                </span>
+                              ) : null}
+                              {entry.kind === 'placeholder' && !isEditingPlaceholder ? (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingPlaceholder(entry)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/50 hover:bg-accent/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
+                                >
+                                  Edit session
+                                </button>
+                              ) : null}
+                              {entry.kind === 'lesson' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace(entry.lesson.id)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Open workspace
+                                </button>
+                              ) : null}
+                              {entry.kind === 'placeholder' && entry.relatedLesson ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace(entry.relatedLesson?.id)}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Open lesson
+                                </button>
+                              ) : null}
+                              {entry.kind === 'placeholder' && !entry.relatedLesson && entry.templatePreview ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openLessonWorkspace()}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                >
+                                  Browse templates
+                                </button>
+                              ) : null}
+                              {entry.kind === 'placeholder' && !entry.relatedLesson ? (
+                                creatingLessonDraft?.slotId === entry.id ? (
+                                  <button
+                                    type="button"
+                                    onClick={cancelCreatingLesson}
+                                    className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                  >
+                                    Close planner
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => startCreatingLessonForSlot(entry)}
+                                    className="inline-flex items-center gap-2 rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent transition hover:border-accent/70 hover:bg-accent/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                    disabled={entry.availableTopics.length === 0}
+                                  >
+                                    Plan lesson
+                                  </button>
+                                )
+                              ) : null}
+                              {entry.canDelete ? (
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-200 transition hover:border-rose-400/60 hover:bg-rose-500/10 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                  onClick={() => handleDeleteEntry(entry)}
+                                  disabled={pendingDeleteId === entry.id || pendingUpdateId === entry.id}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                                  {pendingDeleteId === entry.id ? 'Removing…' : entry.deleteLabel}
+                                </button>
+                              ) : (
+                                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  From schedule pattern
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {entry.kind === 'placeholder' ? (
+                            <div className="mt-4 space-y-4">
+                              {creatingLessonDraft?.slotId === entry.id ? (
+                                <form
+                                  className="space-y-4 rounded-2xl border border-accent/30 bg-slate-900/60 p-4"
+                                  onSubmit={handleSaveQuickLesson}
+                                >
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Topic</span>
+                                      <select
+                                        value={creatingLessonDraft?.topicId ?? ''}
+                                        onChange={(event) => handleCreateLessonFieldChange('topicId', event.target.value)}
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                      >
+                                        <option value="" disabled>
+                                          {entry.availableTopics.length === 0 ? 'No topics available' : 'Select topic'}
+                                        </option>
+                                        {entry.availableTopics.map((topic) => (
+                                          <option key={topic.id} value={topic.id} className="bg-slate-900 text-slate-100">
+                                            {topic.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      <span>Status</span>
+                                      <select
+                                        value={creatingLessonDraft?.status ?? 'planned'}
+                                        onChange={(event) =>
+                                          handleCreateLessonFieldChange('status', event.target.value as LessonStatus)
+                                        }
+                                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                      >
+                                        {LESSON_STATUS_OPTIONS.map((option) => (
+                                          <option key={option.id} value={option.id} className="bg-slate-900 text-slate-100">
+                                            {option.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+                                  <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                    <span>Lesson focus</span>
+                                    <textarea
+                                      value={creatingLessonDraft?.focus ?? ''}
+                                      onChange={(event) => handleCreateLessonFieldChange('focus', event.target.value)}
+                                      rows={2}
+                                      className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                      placeholder="What are students working on?"
+                                    />
+                                  </label>
+                                  <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                    <span>Activity notes</span>
+                                    <textarea
+                                      value={creatingLessonDraft?.activityNotes ?? ''}
+                                      onChange={(event) => handleCreateLessonFieldChange('activityNotes', event.target.value)}
+                                      rows={3}
+                                      className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                      placeholder="Key steps, tools, or centers for this class"
+                                    />
+                                  </label>
+                                  <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                    <span>Study suggestion</span>
+                                    <textarea
+                                      value={creatingLessonDraft?.studySuggestion ?? ''}
+                                      onChange={(event) => handleCreateLessonFieldChange('studySuggestion', event.target.value)}
+                                      rows={2}
+                                      className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                      placeholder="Reminders or take-home tasks"
+                                    />
+                                  </label>
+                                  {createLessonError ? (
+                                    <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                                      {createLessonError}
+                                    </p>
+                                  ) : null}
+                                  <div className="flex flex-wrap gap-2">
+                                    <button
+                                      type="submit"
+                                      className="inline-flex items-center gap-2 rounded-full border border-accent/60 bg-accent/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:border-accent/80 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                                      disabled={isCreatingLesson}
+                                    >
+                                      {isCreatingLesson ? 'Saving…' : 'Save lesson'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={cancelCreatingLesson}
+                                      className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <p className="rounded-2xl border border-dashed border-white/15 bg-white/5 p-4 text-xs text-slate-300">
+                                  {entry.availableTopics.length === 0
+                                    ? 'Create a topic for this level to start planning lessons in this slot.'
+                                    : 'Click “Plan lesson” to capture the essentials for this class without leaving the calendar.'}
+                                </p>
+                              )}
+                            </div>
+                          ) : null}
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-white/20 bg-surface/40 p-6 text-center text-sm text-slate-300">
+                  {totalDayEntries === 0
+                    ? 'No lessons or sessions scheduled for this day yet.'
+                    : 'The selected entry is no longer available. Show the full day to review remaining sessions.'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

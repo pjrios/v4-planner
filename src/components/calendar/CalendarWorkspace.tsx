@@ -1505,7 +1505,7 @@ export function CalendarWorkspace() {
     };
   }, [handleNext, handlePrev, handleToday, handleViewChange]);
 
-  const filteredEvents = useMemo<EventInput[]>(() => {
+  const filteredEvents = useMemo((): EventInput[] => {
     const lessonsMatchingFilters = calendarData.lessons.filter(lessonMatchesFilters);
 
     const { events: lessonEvents } = createLessonEvents(
@@ -1571,7 +1571,7 @@ export function CalendarWorkspace() {
     topicsById,
   ]);
 
-  const dayDetailEntries = useMemo<DayDetailEntry[] | null>(() => {
+  const dayDetailEntries = useMemo((): DayDetailEntry[] | null => {
     if (!activeDayDetails) {
       return null;
     }
@@ -1763,7 +1763,7 @@ export function CalendarWorkspace() {
     calendarData.topics,
   ]);
 
-  const displayedDayEntries = useMemo<DayDetailEntry[]>(() => {
+  const displayedDayEntries = useMemo((): DayDetailEntry[] => {
     if (!dayDetailEntries) {
       return [];
     }

@@ -115,6 +115,7 @@ export interface Lesson {
   date: string;
   startTime: string;
   endTime: string;
+  placeholderId?: Identifier;
   status: LessonStatus;
   preActivity?: LessonPhase;
   whileActivity?: LessonPhase;

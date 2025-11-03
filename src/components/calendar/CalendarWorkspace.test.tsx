@@ -14,6 +14,19 @@ const emitDexieChanges = (changes: Array<{ table: string }>) => {
   }
 };
 
+type MockCalendarEvent = { id: string | number; title: string };
+type MockDatesSetArg = {
+  start: Date;
+  end: Date;
+  view: { type: string; title: string };
+};
+
+type FullCalendarMockProps = {
+  events?: MockCalendarEvent[];
+  initialView?: string;
+  datesSet?: (arg: MockDatesSetArg) => void;
+};
+
 const { gotoDateMock, getAllMock, getInDateRangeMock } = vi.hoisted(() => ({
   gotoDateMock: vi.fn(),
   getAllMock: vi.fn(),
@@ -25,7 +38,8 @@ vi.mock('@fullcalendar/react', () => {
 
   return {
     __esModule: true,
-    default: forwardRef((props: any, ref: any) => {
+    default: forwardRef<unknown, FullCalendarMockProps>((props, ref) => {
+      const { datesSet, initialView, events = [] } = props;
       const [range, setRange] = useState(() => {
         const now = new Date('2024-01-15T00:00:00.000Z');
         const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -50,16 +64,16 @@ vi.mock('@fullcalendar/react', () => {
       }));
 
       useEffect(() => {
-        props.datesSet?.({
+        datesSet?.({
           start: range.start,
           end: range.end,
-          view: { type: props.initialView ?? 'dayGridMonth', title: 'Mock view' },
+          view: { type: initialView ?? 'dayGridMonth', title: 'Mock view' },
         });
-      }, [props.datesSet, props.initialView, range]);
+      }, [datesSet, initialView, range]);
 
       return (
         <div data-testid="fullcalendar-mock">
-          {(props.events ?? []).map((event: any) => (
+          {events.map((event) => (
             <div key={event.id} data-testid={`event-${event.id}`}>
               {event.title}
             </div>

@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
-import { ensureSampleData } from './data/seed';
+import { removeSampleData } from './data/seed';
 
 const rootElement = document.getElementById('root');
 
@@ -20,12 +20,17 @@ const renderApp = () => {
   );
 };
 
-if (import.meta.env.DEV) {
-  ensureSampleData()
-    .catch((error) => {
-      console.error('Failed to seed development data', error);
-    })
-    .finally(renderApp);
-} else {
-  renderApp();
-}
+const bootstrap = async () => {
+  try {
+    const result = await removeSampleData();
+    if (result?.status === 'removed') {
+      console.info(`[Planner] ${result.message}`);
+    }
+  } catch (error) {
+    console.error('Failed to clear sample data', error);
+  } finally {
+    renderApp();
+  }
+};
+
+void bootstrap();

@@ -38,6 +38,7 @@ import type {
   Schedule,
   Topic,
 } from '../../data/types';
+import { LessonHub, type LessonHubSnapshot } from './LessonHub';
 
 const PHASE_KEY: Record<LessonPhaseType, 'preActivity' | 'whileActivity' | 'postActivity'> = {
   pre: 'preActivity',
@@ -45,7 +46,7 @@ const PHASE_KEY: Record<LessonPhaseType, 'preActivity' | 'whileActivity' | 'post
   post: 'postActivity',
 };
 
-type LessonTab = 'objectives' | 'activities' | 'resources' | 'assessment' | 'review';
+type LessonTab = 'overview' | 'activities' | 'resources' | 'assessment' | 'review';
 
 type LessonResourceDetail = LessonResourceAttachment & {
   resource?: Resource;
@@ -83,6 +84,8 @@ type LessonLevelGroup = {
 };
 
 type CreateLessonFormState = {
+  mode: 'template' | 'scheduled';
+  title: string;
   levelId: string;
   groupId: string;
   topicId: string;
@@ -100,7 +103,7 @@ type LookupMaps = {
 };
 
 const TABS: { id: LessonTab; label: string; description: string }[] = [
-  { id: 'objectives', label: 'Objectives', description: 'Learning targets and lesson context' },
+  { id: 'overview', label: 'Overview', description: 'Lesson info, objectives, and notes' },
   { id: 'activities', label: 'Activities', description: 'Pre, while, and post structures' },
   { id: 'resources', label: 'Resources', description: 'Attachments and supporting materials' },
   { id: 'assessment', label: 'Assessment', description: 'Rubrics and progress checks' },
@@ -467,7 +470,7 @@ export function LessonWorkspace() {
   const [placeholderLibrary, setPlaceholderLibrary] = useState<PlaceholderSlot[]>([]);
   const [trimesterLibrary, setTrimesterLibrary] = useState<Trimester[]>([]);
   const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<LessonTab>('objectives');
+  const [activeTab, setActiveTab] = useState<LessonTab>('overview');
   const [lessonDraft, setLessonDraft] = useState<Lesson | null>(null);
   const [resourceDraft, setResourceDraft] = useState<LessonResourceAttachment[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
@@ -479,15 +482,18 @@ export function LessonWorkspace() {
   const [expandedLevelIds, setExpandedLevelIds] = useState<string[]>([]);
   const [expandedTrimesterKeys, setExpandedTrimesterKeys] = useState<string[]>([]);
   const [createLessonForm, setCreateLessonForm] = useState<CreateLessonFormState>({
+    mode: 'template',
+    title: '',
     levelId: '',
     groupId: '',
     topicId: '',
     trimesterId: '',
     slotId: '',
-    status: 'planned',
+    status: 'draft',
   });
   const [createLessonError, setCreateLessonError] = useState<string | null>(null);
   const [isCreatingLesson, setIsCreatingLesson] = useState(false);
+  const [viewMode, setViewMode] = useState<'hub' | 'planner'>('hub');
   const saveTimeoutRef = useRef<number>();
   const skipNextSaveRef = useRef(true);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -622,7 +628,26 @@ export function LessonWorkspace() {
 
   const ensureCreateFormConsistency = useCallback(
     (draft: CreateLessonFormState) => {
-      let next = { ...draft };
+      const next: CreateLessonFormState = { ...draft };
+
+      if (next.mode === 'template') {
+        if (next.levelId && !levelLibrary.some((level) => level.id === next.levelId)) {
+          next.levelId = '';
+        }
+
+        if (next.groupId && !groupLibrary.some((group) => group.id === next.groupId)) {
+          next.groupId = '';
+        }
+
+        if (next.topicId && !topicLibrary.some((topic) => topic.id === next.topicId)) {
+          next.topicId = '';
+        }
+
+        next.trimesterId = '';
+        next.slotId = '';
+        next.status = 'draft';
+        return next;
+      }
 
       if (next.levelId && !levelLibrary.some((level) => level.id === next.levelId)) {
         next.levelId = '';
@@ -662,6 +687,14 @@ export function LessonWorkspace() {
         next.trimesterId = trimesterLibrary[0]?.id ?? '';
       }
 
+      if (!next.title && selectedTopic?.name) {
+        next.title = selectedTopic.name;
+      }
+
+      if (next.status === 'draft') {
+        next.status = 'planned';
+      }
+
       const matchingSlots = placeholderLibrary.filter(
         (slot) => slot.groupId === next.groupId && slot.trimesterId === next.trimesterId
       );
@@ -691,18 +724,31 @@ export function LessonWorkspace() {
   );
 
   const buildInitialCreateForm = useCallback(
-    (preferredLevelId?: string, preferredGroupId?: string, preferredTrimesterId?: string) => {
-      const initialLevelId = preferredLevelId && levelLibrary.some((level) => level.id === preferredLevelId)
-        ? preferredLevelId
-        : levelLibrary[0]?.id ?? '';
+    (
+      preferredLevelId?: string,
+      preferredGroupId?: string,
+      preferredTrimesterId?: string,
+      preferredMode?: 'template' | 'scheduled'
+    ) => {
+      const mode: 'template' | 'scheduled' =
+        preferredMode ?? (preferredGroupId || preferredTrimesterId ? 'scheduled' : 'template');
+
+      const initialLevelId =
+        preferredLevelId && levelLibrary.some((level) => level.id === preferredLevelId)
+          ? preferredLevelId
+          : mode === 'scheduled'
+          ? levelLibrary[0]?.id ?? ''
+          : preferredLevelId ?? '';
 
       const base: CreateLessonFormState = {
+        mode,
+        title: '',
         levelId: initialLevelId,
         groupId: preferredGroupId ?? '',
         topicId: '',
-        trimesterId: preferredTrimesterId ?? '',
+        trimesterId: mode === 'scheduled' ? preferredTrimesterId ?? '' : '',
         slotId: '',
-        status: 'planned',
+        status: mode === 'scheduled' ? 'planned' : 'draft',
       };
 
       return ensureCreateFormConsistency(base);
@@ -746,6 +792,17 @@ export function LessonWorkspace() {
       return acc;
     }, {});
   }, [lessons]);
+
+  const hubSnapshots = useMemo<LessonHubSnapshot[]>(
+    () =>
+      lessons.map((detail) => ({
+        lesson: detail.lesson,
+        topic: detail.topic,
+        level: detail.level ?? (detail.group ? levelMap.get(detail.group.levelId) : undefined),
+        group: detail.group ?? (detail.lesson.groupId ? groupMap.get(detail.lesson.groupId) : undefined),
+      })),
+    [groupMap, lessons, levelMap]
+  );
 
   const sortedLevels = useMemo(() => {
     return [...levelLibrary].sort((a, b) => {
@@ -1000,23 +1057,45 @@ export function LessonWorkspace() {
   const handleCreateLessonFieldChange = useCallback(
     <K extends keyof CreateLessonFormState>(field: K, value: CreateLessonFormState[K]) => {
       setCreateLessonForm((current) => {
-        const draft: CreateLessonFormState = { ...current, [field]: value };
-        if (field === 'slotId' && typeof value === 'string' && value) {
+        let draft: CreateLessonFormState = { ...current, [field]: value };
+
+        if (field === 'mode') {
+          const mode = value as CreateLessonFormState['mode'];
+          draft = {
+            ...draft,
+            mode,
+            status: mode === 'template' ? 'draft' : draft.status === 'draft' ? 'planned' : draft.status,
+          };
+          if (mode === 'template') {
+            draft.trimesterId = '';
+            draft.slotId = '';
+          }
+        }
+
+        if (field === 'slotId' && typeof value === 'string' && value && draft.mode === 'scheduled') {
           const slot = placeholderMap.get(value);
           if (slot) {
             draft.trimesterId = slot.trimesterId;
           }
         }
+
+        if (field === 'topicId' && typeof value === 'string') {
+          const selected = topicLibrary.find((topic) => topic.id === value);
+          if (selected && !draft.title.trim()) {
+            draft.title = selected.name;
+          }
+        }
+
         return ensureCreateFormConsistency(draft);
       });
     },
-    [ensureCreateFormConsistency, placeholderMap]
+    [ensureCreateFormConsistency, placeholderMap, topicLibrary]
   );
 
   const openCreateLesson = useCallback(
-    (levelId?: string, groupId?: string, trimesterId?: string) => {
+    (levelId?: string, groupId?: string, trimesterId?: string, mode?: 'template' | 'scheduled') => {
       setCreateLessonError(null);
-      setCreateLessonForm(buildInitialCreateForm(levelId, groupId, trimesterId));
+      setCreateLessonForm(buildInitialCreateForm(levelId, groupId, trimesterId, mode));
       setIsCreateLessonOpen(true);
     },
     [buildInitialCreateForm]
@@ -1025,71 +1104,116 @@ export function LessonWorkspace() {
   const closeCreateLesson = useCallback(() => {
     setIsCreateLessonOpen(false);
     setCreateLessonError(null);
-    setCreateLessonForm(buildInitialCreateForm());
+    setCreateLessonForm(buildInitialCreateForm(undefined, undefined, undefined, 'template'));
   }, [buildInitialCreateForm]);
 
   const handleCreateLessonSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
 
-      const { groupId, topicId, trimesterId, slotId, status } = createLessonForm;
-
-      if (!groupId) {
-        setCreateLessonError('Select a class group before creating a lesson.');
-        return;
-      }
-
-      if (!topicId) {
-        setCreateLessonError('Choose a topic for this lesson.');
-        return;
-      }
-
-      if (!trimesterId) {
-        setCreateLessonError('Pick a trimester for this lesson.');
-        return;
-      }
-
-      if (!slotId) {
-        setCreateLessonError('Select a session slot for this lesson.');
-        return;
-      }
-
-      const slot = placeholderMap.get(slotId);
-      if (!slot || slot.groupId !== groupId) {
-        setCreateLessonError('Choose a session slot that matches this class group.');
-        return;
-      }
-
-      if (usedSlotIds.has(slotId)) {
-        setCreateLessonError('That session slot is already assigned to another lesson.');
-        return;
-      }
+      const { mode, title, groupId, topicId, trimesterId, slotId, status } = createLessonForm;
 
       const lessonId =
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `lesson_${Date.now()}`;
 
-      const newLesson: Lesson = {
-        id: lessonId,
-        groupId: slot.groupId,
-        topicId,
-        trimesterId: slot.trimesterId,
-        date: slot.date,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
-        placeholderId: slot.id,
-        status,
-        preActivity: undefined,
-        whileActivity: undefined,
-        postActivity: undefined,
-        resourceAttachments: [],
-        linkedLessonIds: [],
-      };
-
       try {
         setIsCreatingLesson(true);
         setCreateLessonError(null);
+
+        if (mode === 'template') {
+          const trimmedTitle = title.trim();
+          if (!trimmedTitle) {
+            setCreateLessonError('Add a title for this template before saving.');
+            setIsCreatingLesson(false);
+            return;
+          }
+
+          const newLesson: Lesson = {
+            id: lessonId,
+            title: trimmedTitle,
+            groupId: groupId || '',
+            topicId: topicId || '',
+            trimesterId: '',
+            date: '',
+            startTime: '',
+            endTime: '',
+            status,
+            preActivity: undefined,
+            whileActivity: undefined,
+            postActivity: undefined,
+            resourceAttachments: [],
+            linkedLessonIds: [],
+          };
+
+          await DataStore.save('lessons', newLesson);
+          const detail = buildLessonDetail(newLesson, {
+            groups: groupMap,
+            levels: levelMap,
+            topics: topicMap,
+            rubrics: rubricMap,
+            resources: resourceMap,
+          });
+          setLessons((current) => sortLessonDetails([...current, detail]));
+          setIsCreateLessonOpen(false);
+          setCreateLessonForm(buildInitialCreateForm(undefined, undefined, undefined, 'template'));
+          setActiveLessonId(newLesson.id);
+          return;
+        }
+
+        if (!groupId) {
+          setCreateLessonError('Select a class group before creating a lesson.');
+          return;
+        }
+
+        if (!topicId) {
+          setCreateLessonError('Choose a topic for this lesson.');
+          return;
+        }
+
+        if (!trimesterId) {
+          setCreateLessonError('Pick a trimester for this lesson.');
+          return;
+        }
+
+        if (!slotId) {
+          setCreateLessonError('Select a session slot for this lesson.');
+          return;
+        }
+
+        const slot = placeholderMap.get(slotId);
+        if (!slot || slot.groupId !== groupId) {
+          setCreateLessonError('Choose a session slot that matches this class group.');
+          return;
+        }
+
+        if (usedSlotIds.has(slotId)) {
+          setCreateLessonError('That session slot is already assigned to another lesson.');
+          return;
+        }
+
+        const slotGroup = groupMap.get(slot.groupId);
+        const selectedTopic = topicLibrary.find((topic) => topic.id === topicId);
+        const lessonTitle = title.trim() || selectedTopic?.name || 'Untitled lesson';
+        const newLesson: Lesson = {
+          id: lessonId,
+          title: lessonTitle,
+          groupId: slot.groupId,
+          topicId,
+          trimesterId: slot.trimesterId,
+          date: slot.date,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          placeholderId: slot.id,
+          status,
+          preActivity: undefined,
+          whileActivity: undefined,
+          postActivity: undefined,
+          resourceAttachments: [],
+          linkedLessonIds: [],
+        };
+
         await DataStore.save('lessons', newLesson);
         const detail = buildLessonDetail(newLesson, {
           groups: groupMap,
@@ -1100,7 +1224,9 @@ export function LessonWorkspace() {
         });
         setLessons((current) => sortLessonDetails([...current, detail]));
         setIsCreateLessonOpen(false);
-        setCreateLessonForm(buildInitialCreateForm());
+        setCreateLessonForm(
+          buildInitialCreateForm(slotGroup?.levelId, slot.groupId, slot.trimesterId, 'scheduled')
+        );
         setActiveLessonId(newLesson.id);
       } catch (createError) {
         console.error('Failed to create lesson', createError);
@@ -1115,6 +1241,7 @@ export function LessonWorkspace() {
       groupMap,
       levelMap,
       placeholderMap,
+      topicLibrary,
       topicMap,
       rubricMap,
       resourceMap,
@@ -1146,6 +1273,10 @@ export function LessonWorkspace() {
   }, [trimesterLibrary]);
 
   const availableCreateSlots = useMemo(() => {
+    if (createLessonForm.mode !== 'scheduled') {
+      return [] as PlaceholderSlot[];
+    }
+
     if (!createLessonForm.groupId || !createLessonForm.trimesterId) {
       return [] as PlaceholderSlot[];
     }
@@ -1163,13 +1294,18 @@ export function LessonWorkspace() {
         }
         return a.startTime.localeCompare(b.startTime);
       });
-  }, [createLessonForm.groupId, createLessonForm.trimesterId, placeholderLibrary, usedSlotIds]);
+  }, [createLessonForm.groupId, createLessonForm.mode, createLessonForm.trimesterId, placeholderLibrary, usedSlotIds]);
 
-  const selectedCreateSlot = createLessonForm.slotId
-    ? placeholderMap.get(createLessonForm.slotId) ?? null
-    : null;
+  const selectedCreateSlot =
+    createLessonForm.mode === 'scheduled' && createLessonForm.slotId
+      ? placeholderMap.get(createLessonForm.slotId) ?? null
+      : null;
 
   const canSubmitNewLesson = useMemo(() => {
+    if (createLessonForm.mode === 'template') {
+      return true;
+    }
+
     const { groupId, topicId, trimesterId, slotId } = createLessonForm;
     if (!groupId || !topicId || !trimesterId || !slotId) {
       return false;
@@ -1234,7 +1370,7 @@ export function LessonWorkspace() {
 
   useEffect(() => {
     if (isDrawerOpen) {
-      setActiveTab('objectives');
+      setActiveTab('overview');
       const timeout = setTimeout(() => {
         closeButtonRef.current?.focus();
       }, 50);
@@ -1469,6 +1605,8 @@ export function LessonWorkspace() {
   const draftRubric = lessonForPanels?.rubricId
     ? rubricMap.get(lessonForPanels.rubricId)
     : selectedLesson?.rubric;
+  const lessonTitleDisplay = lessonForPanels?.title?.trim() || selectedLesson?.topic?.name || 'Untitled lesson';
+  const isTemplateMode = createLessonForm.mode === 'template';
 
   return (
     <section
@@ -1489,6 +1627,32 @@ export function LessonWorkspace() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start">
+          <div className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <button
+              type="button"
+              onClick={() => setViewMode('hub')}
+              className={`rounded-full px-3 py-1.5 transition ${
+                viewMode === 'hub'
+                  ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                  : 'text-slate-300 hover:bg-white/10 hover:text-white'
+              }`}
+              aria-pressed={viewMode === 'hub'}
+            >
+              Lesson hub
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('planner')}
+              className={`rounded-full px-3 py-1.5 transition ${
+                viewMode === 'planner'
+                  ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                  : 'text-slate-300 hover:bg-white/10 hover:text-white'
+              }`}
+              aria-pressed={viewMode === 'planner'}
+            >
+              Planner view
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => openCreateLesson()}
@@ -1529,6 +1693,15 @@ export function LessonWorkspace() {
           </div>
         ) : error ? (
           <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-sm text-red-200">{error}</div>
+        ) : viewMode === 'hub' ? (
+          <LessonHub
+            lessons={hubSnapshots}
+            levels={levelLibrary}
+            groups={groupLibrary}
+            topics={topicLibrary}
+            onOpenLesson={(lessonId) => setActiveLessonId(lessonId)}
+            onCreateLesson={() => openCreateLesson()}
+          />
         ) : groupedLessons.length ? (
           <ul className="space-y-4">
             {groupedLessons.map((entry) => {
@@ -1564,7 +1737,7 @@ export function LessonWorkspace() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => openCreateLesson(level?.id)}
+                      onClick={() => openCreateLesson(level?.id, undefined, undefined, 'scheduled')}
                       className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/60 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                     >
                       <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -1613,7 +1786,7 @@ export function LessonWorkspace() {
                                   {canCreateInTrimester ? (
                                     <button
                                       type="button"
-                                      onClick={() => openCreateLesson(level?.id, undefined, trimesterId)}
+                                      onClick={() => openCreateLesson(level?.id, undefined, trimesterId, 'scheduled')}
                                       className="inline-flex items-center gap-2 self-start rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-accent/60 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                                     >
                                       <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -1657,7 +1830,7 @@ export function LessonWorkspace() {
                                                         <div className="flex items-center justify-between gap-3">
                                                           <div className="flex items-center gap-3 text-sm font-semibold text-white">
                                                             <BookOpenCheck className="h-4 w-4 text-accent" aria-hidden />
-                                                            <span>{topic?.name ?? 'Untitled lesson'}</span>
+                                                            <span>{lesson.title?.trim() || topic?.name || 'Untitled lesson'}</span>
                                                           </div>
                                                           <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-slate-200">
                                                             {LESSON_STATUS_LABELS[lesson.status]}
@@ -1754,8 +1927,39 @@ export function LessonWorkspace() {
                 <h3 id="create-lesson-title" className="text-xl font-semibold text-white">
                   Create a new lesson
                 </h3>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Lesson type</span>
+                  <div className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCreateLessonFieldChange('mode', 'template')}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+                        isTemplateMode
+                          ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                          : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                      }`}
+                      aria-pressed={isTemplateMode}
+                    >
+                      Template lesson
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCreateLessonFieldChange('mode', 'scheduled')}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+                        !isTemplateMode
+                          ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                          : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                      }`}
+                      aria-pressed={!isTemplateMode}
+                    >
+                      Scheduled session
+                    </button>
+                  </div>
+                </div>
                 <p className="text-sm text-slate-400">
-                  Pick the class, topic, and scheduled session slot to add a lesson you can refine in the workspace.
+                  {isTemplateMode
+                    ? 'Capture a reusable lesson shell without assigning it to a timetable yet. You can link it to specific classes and slots later from the Lesson Hub or calendar.'
+                    : 'Pick the class, topic, and scheduled session slot to add a lesson you can refine in the workspace.'}
                 </p>
               </header>
               {createLessonError ? (
@@ -1764,8 +1968,20 @@ export function LessonWorkspace() {
                 </p>
               ) : null}
               <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-2 text-sm sm:col-span-2">
+                  <span className="font-semibold text-slate-200">Lesson title{isTemplateMode ? '' : ''}</span>
+                  <input
+                    type="text"
+                    value={createLessonForm.title}
+                    onChange={(event) => handleCreateLessonFieldChange('title', event.target.value)}
+                    placeholder={isTemplateMode ? 'e.g. Digital Citizenship intro' : 'Lesson name'}
+                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  />
+                </label>
                 <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Level</span>
+                  <span className="font-semibold text-slate-200">
+                    {isTemplateMode ? 'Level (optional)' : 'Level'}
+                  </span>
                   <select
                     value={createLessonForm.levelId}
                     onChange={(event) => handleCreateLessonFieldChange('levelId', event.target.value)}
@@ -1778,7 +1994,9 @@ export function LessonWorkspace() {
                   </select>
                 </label>
                 <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Class group</span>
+                  <span className="font-semibold text-slate-200">
+                    {isTemplateMode ? 'Class group (optional)' : 'Class group'}
+                  </span>
                   <select
                     value={createLessonForm.groupId}
                     onChange={(event) => handleCreateLessonFieldChange('groupId', event.target.value)}
@@ -1786,18 +2004,25 @@ export function LessonWorkspace() {
                     className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
                   >
                     {createFormGroups.length ? (
-                      createFormGroups.map((group) => (
-                        <option key={group.id} value={group.id}>
-                          {group.displayName}
+                      <>
+                        <option value="">
+                          {isTemplateMode ? 'No group selected' : 'Select a class group'}
                         </option>
-                      ))
+                        {createFormGroups.map((group) => (
+                          <option key={group.id} value={group.id}>
+                            {group.displayName}
+                          </option>
+                        ))}
+                      </>
                     ) : (
                       <option value="">No groups available</option>
                     )}
                   </select>
                 </label>
                 <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Topic</span>
+                  <span className="font-semibold text-slate-200">
+                    {isTemplateMode ? 'Topic (optional)' : 'Topic'}
+                  </span>
                   <select
                     value={createLessonForm.topicId}
                     onChange={(event) => handleCreateLessonFieldChange('topicId', event.target.value)}
@@ -1805,78 +2030,91 @@ export function LessonWorkspace() {
                     className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
                   >
                     {createFormTopics.length ? (
-                      createFormTopics.map((topic) => (
-                        <option key={topic.id} value={topic.id}>
-                          {topic.name}
+                      <>
+                        <option value="">
+                          {isTemplateMode ? 'No topic selected' : 'Select a topic'}
                         </option>
-                      ))
+                        {createFormTopics.map((topic) => (
+                          <option key={topic.id} value={topic.id}>
+                            {topic.name}
+                          </option>
+                        ))}
+                      </>
                     ) : (
                       <option value="">No topics available</option>
                     )}
                   </select>
                 </label>
-                <label className="flex flex-col gap-2 text-sm">
-                  <span className="font-semibold text-slate-200">Trimester</span>
-                  <select
-                    value={createLessonForm.trimesterId}
-                    onChange={(event) => handleCreateLessonFieldChange('trimesterId', event.target.value)}
-                    disabled={createFormTrimesters.length === 0}
-                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
-                  >
-                    {createFormTrimesters.length ? (
-                      createFormTrimesters.map((trimester) => (
-                        <option key={trimester.id} value={trimester.id}>
-                          {trimester.name}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">No trimesters available</option>
-                    )}
-                  </select>
-                </label>
-                <label className="flex flex-col gap-2 text-sm sm:col-span-2">
-                  <span className="font-semibold text-slate-200">Session slot</span>
-                  <select
-                    value={createLessonForm.slotId}
-                    onChange={(event) => handleCreateLessonFieldChange('slotId', event.target.value)}
-                    disabled={availableCreateSlots.length === 0}
-                    className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
-                  >
-                    {availableCreateSlots.length === 0 ? (
-                      <option value="">No session slots available</option>
-                    ) : (
-                      <>
-                        <option value="">Select a session slot</option>
-                        {availableCreateSlots.map((slot) => (
-                          <option key={slot.id} value={slot.id}>
-                            {`${formatDate(slot.date)} • ${formatTimeRange(slot.startTime, slot.endTime)}`}
-                          </option>
-                        ))}
-                      </>
-                    )}
-                  </select>
-                </label>
-                <div className="sm:col-span-2">
-                  {selectedCreateSlot ? (
-                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
-                      <p>
-                        Scheduled for{' '}
-                        <span className="font-semibold text-white">{formatDate(selectedCreateSlot.date)}</span>{' '}
-                        at{' '}
-                        <span className="font-semibold text-white">
-                          {formatTimeRange(selectedCreateSlot.startTime, selectedCreateSlot.endTime)}
-                        </span>
-                      </p>
-                      <p className="mt-2 text-xs text-slate-400">
-                        Timing is managed by the schedule. Updates in the scheduler will keep this lesson in sync.
-                      </p>
+                {!isTemplateMode ? (
+                  <>
+                    <label className="flex flex-col gap-2 text-sm">
+                      <span className="font-semibold text-slate-200">Trimester</span>
+                      <select
+                        value={createLessonForm.trimesterId}
+                        onChange={(event) => handleCreateLessonFieldChange('trimesterId', event.target.value)}
+                        disabled={createFormTrimesters.length === 0}
+                        className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                      >
+                        {createFormTrimesters.length ? (
+                          createFormTrimesters.map((trimester) => (
+                            <option key={trimester.id} value={trimester.id}>
+                              {trimester.name}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="">No trimesters available</option>
+                        )}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm sm:col-span-2">
+                      <span className="font-semibold text-slate-200">Session slot</span>
+                      <select
+                        value={createLessonForm.slotId}
+                        onChange={(event) => handleCreateLessonFieldChange('slotId', event.target.value)}
+                        disabled={availableCreateSlots.length === 0}
+                        className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                      >
+                        {availableCreateSlots.length === 0 ? (
+                          <option value="">No session slots available</option>
+                        ) : (
+                          <>
+                            <option value="">Select a session slot</option>
+                            {availableCreateSlots.map((slot) => (
+                              <option key={slot.id} value={slot.id}>
+                                {`${formatDate(slot.date)} • ${formatTimeRange(slot.startTime, slot.endTime)}`}
+                              </option>
+                            ))}
+                          </>
+                        )}
+                      </select>
+                    </label>
+                    <div className="sm:col-span-2">
+                      {selectedCreateSlot ? (
+                        <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                          <p>
+                            Scheduled for{' '}
+                            <span className="font-semibold text-white">{formatDate(selectedCreateSlot.date)}</span>{' '}
+                            at{' '}
+                            <span className="font-semibold text-white">
+                              {formatTimeRange(selectedCreateSlot.startTime, selectedCreateSlot.endTime)}
+                            </span>
+                          </p>
+                          <p className="mt-2 text-xs text-slate-400">
+                            Timing is managed by the schedule. Updates in the scheduler will keep this lesson in sync.
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                          Select a scheduled session slot from your timetable to place this lesson.
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
-                      Select a scheduled session slot from your timetable to place this lesson.
-                    </p>
-                  )}
-                </div>
+                  </>
+                ) : (
+                  <div className="sm:col-span-2 rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                    Link this lesson to specific classes and sessions whenever you are ready.
+                  </div>
+                )}
                 <label className="flex flex-col gap-2 text-sm">
                   <span className="font-semibold text-slate-200">Status</span>
                   <select
@@ -1898,7 +2136,11 @@ export function LessonWorkspace() {
                   className="inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
                   disabled={!canSubmitNewLesson || isCreatingLesson}
                 >
-                  {isCreatingLesson ? 'Creating…' : 'Create lesson'}
+                  {isCreatingLesson
+                    ? 'Saving…'
+                    : isTemplateMode
+                    ? 'Save template'
+                    : 'Create lesson'}
                 </button>
                 <button
                   type="button"
@@ -1935,7 +2177,7 @@ export function LessonWorkspace() {
                   {formatTimeRange(selectedLessonSlot?.startTime, selectedLessonSlot?.endTime)}
                 </div>
                 <h3 id="lesson-drawer-title" className="text-2xl font-semibold text-white">
-                  {selectedLesson.topic?.name ?? 'Untitled lesson'}
+                  {lessonTitleDisplay}
                 </h3>
                 <p className="text-sm text-slate-400">
                   {selectedLesson.group?.displayName ? `${selectedLesson.group.displayName} · ` : ''}
@@ -1997,8 +2239,17 @@ export function LessonWorkspace() {
                     hidden={!isActive}
                     className="space-y-6"
                   >
-                    {tab.id === 'objectives' ? (
-                      <ObjectivesPanel detail={selectedLesson} lesson={lessonForPanels} />
+                    {tab.id === 'overview' ? (
+                      <OverviewPanel
+                        detail={selectedLesson}
+                        lesson={lessonForPanels}
+                        topics={topicLibrary}
+                        onFieldChange={updateLessonFields}
+                        onObjectivesChange={(value) => {
+                          const objectives = parseList(value);
+                          updatePhase('pre', { objectives: objectives.length ? objectives : undefined });
+                        }}
+                      />
                     ) : null}
                     {tab.id === 'activities' ? (
                       <ActivitiesPanel
@@ -2067,8 +2318,6 @@ export function LessonWorkspace() {
   );
 }
 
-type PanelProps = { detail: LessonDetail; lesson: Lesson };
-
 type ActivitiesPanelProps = {
   lesson: Lesson;
   onPhaseChange: (phase: LessonPhaseType, updates: Partial<LessonPhase>) => void;
@@ -2120,33 +2369,126 @@ type SaveStatusProps = {
   error: string | null;
 };
 
-function ObjectivesPanel({ detail, lesson }: PanelProps) {
-  const objectives = collectObjectives(lesson);
+type OverviewPanelProps = {
+  detail: LessonDetail;
+  lesson: Lesson;
+  topics: Topic[];
+  onFieldChange: (updates: Partial<Lesson>) => void;
+  onObjectivesChange: (value: string) => void;
+};
+
+function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChange }: OverviewPanelProps) {
+  const titleValue = lesson.title ?? '';
+  const objectivesValue = (lesson.preActivity?.objectives ?? []).join('\n');
+  const statusOptions = Object.entries(LESSON_STATUS_LABELS);
+  const topicValue = lesson.topicId ?? '';
+  const statusValue = lesson.status;
+  const notesValue = lesson.completionNotes ?? '';
+  const scheduleLabel = lesson.date ? formatDate(lesson.date) : 'Not scheduled';
+  const timeLabel = lesson.startTime ? formatTimeRange(lesson.startTime, lesson.endTime) : 'No time set';
+  const groupLabel = detail.group?.displayName ?? 'No class linked';
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-      <header className="flex items-center gap-3 text-sm font-semibold uppercase tracking-wide text-slate-300">
-        <Presentation className="h-4 w-4 text-accent" aria-hidden />
-        Learning objectives
-      </header>
-      <div className="mt-4 space-y-4 text-sm text-slate-200">
-        {objectives.length ? (
-          <ul className="list-disc space-y-2 pl-5 text-slate-200">
-            {objectives.map((objective) => (
-              <li key={objective}>{objective}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-slate-400">
-            No objectives documented yet. Use this space to capture the essential understandings for the session.
-          </p>
-        )}
+    <div className="space-y-4">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+        <header className="flex items-center gap-3 text-sm font-semibold uppercase tracking-wide text-slate-300">
+          <Presentation className="h-4 w-4 text-accent" aria-hidden />
+          Lesson overview
+        </header>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <label className="flex flex-col gap-2 text-sm sm:col-span-2">
+            <span className="font-semibold text-slate-200">Lesson title</span>
+            <input
+              type="text"
+              value={titleValue}
+              onChange={(event) => onFieldChange({ title: event.target.value })}
+              placeholder="Give this lesson a friendly name"
+              className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label className="flex flex-col gap-2 text-sm">
+            <span className="font-semibold text-slate-200">Linked topic</span>
+            <select
+              value={topicValue}
+              onChange={(event) => onFieldChange({ topicId: event.target.value })}
+              className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              <option value="">No topic selected</option>
+              {topics
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((topic) => (
+                  <option key={topic.id} value={topic.id}>
+                    {topic.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-2 text-sm">
+            <span className="font-semibold text-slate-200">Status</span>
+            <select
+              value={statusValue}
+              onChange={(event) => onFieldChange({ status: event.target.value as Lesson['status'] })}
+              className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              {statusOptions.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-3 text-xs text-slate-300">
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="font-semibold text-white">Class</p>
+            <p>{groupLabel}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="font-semibold text-white">Scheduled date</p>
+            <p>{scheduleLabel}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="font-semibold text-white">Time</p>
+            <p>{timeLabel}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+        <header className="flex items-center gap-3 text-sm font-semibold uppercase tracking-wide text-slate-300">
+          <Presentation className="h-4 w-4 text-accent" aria-hidden />
+          Learning objectives
+        </header>
+        <p className="mt-2 text-xs text-slate-400">
+          Update the primary objectives for this lesson. They will sync with the pre-lesson phase.
+        </p>
+        <textarea
+          value={objectivesValue}
+          onChange={(event) => onObjectivesChange(event.target.value)}
+          placeholder="List objectives, one per line"
+          className="mt-4 h-32 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        />
         {detail.topic?.description ? (
-          <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
+          <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
             <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Topic summary</h4>
             <p className="mt-1 text-slate-300">{detail.topic.description}</p>
           </div>
         ) : null}
-      </div>
+      </section>
+
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+        <header className="flex items-center gap-3 text-sm font-semibold uppercase tracking-wide text-slate-300">
+          <Presentation className="h-4 w-4 text-accent" aria-hidden />
+          Planning notes
+        </header>
+        <textarea
+          value={notesValue}
+          onChange={(event) => onFieldChange({ completionNotes: event.target.value || undefined })}
+          placeholder="Capture reminders, differentiation ideas, or resource links."
+          className="mt-4 h-28 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        />
+      </section>
     </div>
   );
 }
@@ -2686,7 +3028,7 @@ function ReviewPanel({ detail, lesson, lessons, onCopyRequest, resolveSlot }: Re
                   className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3"
                 >
                   <div>
-                    <p className="font-semibold text-white">{linked.topic?.name ?? 'Linked lesson'}</p>
+                    <p className="font-semibold text-white">{linked.lesson.title?.trim() || linked.topic?.name || 'Linked lesson'}</p>
                     <p className="text-xs uppercase tracking-wide text-slate-400">
                       {linked.group?.displayName ?? 'Unknown group'} · {linkedDate}
                     </p>
@@ -2912,7 +3254,7 @@ function SaveStatus({ state, label, error }: SaveStatusProps) {
     default:
       content = (
         <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Ready
+          Autosave on
         </span>
       );
       break;

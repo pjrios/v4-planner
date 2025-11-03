@@ -25,6 +25,10 @@
 - [x] Implement calendar range listener to prefetch relevant data.
 - [x] Design condensed month view rendering (chips, overflow count).
 - [x] Create day/week tooltips and keyboard shortcuts.
+- [ ] Enhance CalendarWorkspace interactions:
+  - [ ] Open a modal/drawer when clicking an empty placeholder slot.
+  - [ ] Provide a lesson selector with “Create New” and “Attach Existing” (searchable unassigned lessons).
+  - [ ] When attaching, update lesson date/time/placeholderId and refresh the calendar.
 
 ## Lesson Planning
 - [x] Build Lesson drawer/modal shell with tab navigation.
@@ -35,6 +39,15 @@
 - [x] Implement copy-to-level wizard with duration match check.
 - [ ] Handle linked lessons (edit all/this/unlink options).
 - [ ] Add completion status workflow and notes.
+- [ ] Improve LessonWorkspace productivity:
+  - [ ] Add a lesson library view highlighting scheduled vs unassigned templates.
+  - [ ] Implement copy/duplicate lesson action for quick variants.
+- [ ] Build Lesson Hub experience:
+  - [x] Scaffold a central Lesson Hub layout with filter sidebar and grouped lesson cards.
+  - [x] Create collapsible curriculum hierarchy (Grade → Group → Subject → Week → Session → Lesson).
+  - [ ] Surface reusable lesson cards with quick actions (open, duplicate, assign/link).
+  - [ ] Wire “Assign” flow to calendar placeholder modal and schedule linking APIs.
+  - [ ] Track lesson usage metadata (last used date, linked slots) for display and filtering.
 
 ## Rescheduling & Intelligence
 - [ ] Detect schedule/holiday changes and fetch affected lessons.
@@ -42,6 +55,9 @@
 - [ ] Implement cascade logic and undo history.
 - [ ] Support manual drag-and-drop reschedule with conflict checking.
 - [ ] Highlight holidays and trimester boundaries on calendar.
+- [ ] Refine ScheduleBuilder reschedule flow:
+  - [ ] Show a preview of impacts before confirming schedule changes.
+  - [ ] Ask for confirmation when reschedule adjustments affect existing lessons.
 
 ## Reporting & Export
 - [ ] Build coverage dashboard (planned vs completed by topic/trimester).

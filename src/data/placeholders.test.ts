@@ -70,7 +70,13 @@ describe('computePlaceholderSlotsForSchedule', () => {
       displayName: '5A',
     };
 
-    const holidayWindows = [
+    const holidayWindows: Array<{
+      id: string;
+      start: Date;
+      end: Date;
+      appliesToAll: boolean;
+      targets: Set<string>;
+    }> = [
       {
         id: 'holiday-week-two',
         start: parseISO('2024-01-15'),
@@ -85,7 +91,7 @@ describe('computePlaceholderSlotsForSchedule', () => {
         appliesToAll: true,
         targets: new Set<string>(['all']),
       },
-    ] as any;
+    ];
 
     const slots = computePlaceholderSlotsForSchedule(
       schedule,

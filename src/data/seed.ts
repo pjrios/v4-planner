@@ -1,5 +1,5 @@
 import { formatISO } from 'date-fns';
-import { db, DataStore } from './db';
+import { db, DataStore, type CollectionName } from './db';
 import { recomputeAllPlaceholders } from './placeholders';
 import type {
   ActivityTemplate,
@@ -563,6 +563,57 @@ export async function ensureSampleData() {
   return {
     status: 'seeded',
     message: 'Sample data inserted for development preview.',
+    lastUpdated: formatISO(new Date()),
+  } as const;
+}
+
+const SAMPLE_COLLECTIONS: CollectionName[] = [
+  'lessons',
+  'placeholderSlots',
+  'schedules',
+  'groups',
+  'levels',
+  'topics',
+  'trimesters',
+  'holidays',
+  'rubrics',
+  'resources',
+  'templates',
+];
+
+export async function removeSampleData() {
+  const sampleTrimester = await db.trimesters.get(trimester2025.id);
+  if (!sampleTrimester) {
+    return {
+      status: 'skipped',
+      message: 'No sample data detected.',
+      lastUpdated: formatISO(new Date()),
+    } as const;
+  }
+
+  const transactionTables = [
+    db.lessons,
+    db.placeholderSlots,
+    db.schedules,
+    db.groups,
+    db.levels,
+    db.topics,
+    db.trimesters,
+    db.holidays,
+    db.rubrics,
+    db.resources,
+    db.templates,
+  ] as const;
+
+  await db.transaction('rw', transactionTables, async () => {
+    for (const collection of SAMPLE_COLLECTIONS) {
+      await DataStore.clear(collection);
+    }
+  });
+
+  return {
+    status: 'removed',
+    message: 'Sample development data cleared.',
     lastUpdated: formatISO(new Date()),
   } as const;
 }

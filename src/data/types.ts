@@ -109,6 +109,7 @@ export interface LessonPhase {
 
 export interface Lesson {
   id: Identifier;
+  title?: string;
   groupId: Identifier;
   topicId: Identifier;
   trimesterId: Identifier;

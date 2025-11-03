@@ -684,6 +684,22 @@ export function CalendarWorkspace() {
   const [creatingLessonDraft, setCreatingLessonDraft] = useState<QuickLessonDraftState | null>(null);
   const [createLessonError, setCreateLessonError] = useState<string | null>(null);
   const [isCreatingLesson, setIsCreatingLesson] = useState(false);
+  const [placeholderAction, setPlaceholderAction] = useState<{
+    slot: PlaceholderSlot;
+    group: Group | null;
+    level: Level | null;
+    availableTopics: Topic[];
+  } | null>(null);
+  const [placeholderActionMode, setPlaceholderActionMode] = useState<'create' | 'attach'>('create');
+  const [placeholderDraft, setPlaceholderDraft] = useState<QuickLessonDraftState | null>(null);
+  const [placeholderCreateError, setPlaceholderCreateError] = useState<string | null>(null);
+  const [isSavingPlaceholderLesson, setIsSavingPlaceholderLesson] = useState(false);
+  const [unassignedLessons, setUnassignedLessons] = useState<Lesson[]>([]);
+  const [isLoadingUnassignedLessons, setIsLoadingUnassignedLessons] = useState(false);
+  const [lessonSearchTerm, setLessonSearchTerm] = useState('');
+  const [selectedAttachLessonId, setSelectedAttachLessonId] = useState<string | null>(null);
+  const [attachLessonError, setAttachLessonError] = useState<string | null>(null);
+  const [isAttachingLesson, setIsAttachingLesson] = useState(false);
   const lastPrefetchedRange = useRef<{ start: string; end: string } | null>(null);
   const latestRequestedRange = useRef<{ key: string; token: number } | null>(null);
   const nextRangeRequestToken = useRef(0);
@@ -1168,7 +1184,7 @@ export function CalendarWorkspace() {
 
       return a.groupId.localeCompare(b.groupId);
     });
-  }, [calendarData.placeholders, expectedScheduleSlots]);
+  }, [calendarData.placeholders, calendarData.schedules, expectedScheduleSlots]);
 
   const lessons = calendarData.lessons;
 
@@ -1313,6 +1329,45 @@ export function CalendarWorkspace() {
     },
     [groupsById, selectedGroupId, selectedLevelId, selectedTrimesterId]
   );
+
+  const filteredUnassignedLessons = useMemo(() => {
+    const query = lessonSearchTerm.trim().toLowerCase();
+    const targetGroupId = placeholderAction?.slot.groupId ?? null;
+
+    return unassignedLessons
+      .map((lesson) => {
+        const topic = topicsById.get(lesson.topicId);
+        const group = groupsById.get(lesson.groupId);
+        const topicName = topic?.name ?? 'Untitled lesson';
+        const groupName = group?.displayName ?? 'Unassigned';
+        const normalizedTopic = topicName.toLowerCase();
+        const normalizedGroup = groupName.toLowerCase();
+        const matchesQuery =
+          query.length === 0 ||
+          normalizedTopic.includes(query) ||
+          normalizedGroup.includes(query) ||
+          lesson.status.toLowerCase().includes(query);
+        const matchesGroup = targetGroupId ? lesson.groupId === targetGroupId : false;
+
+        return {
+          lesson,
+          topicName,
+          groupName,
+          matchesQuery,
+          matchesGroup,
+        };
+      })
+      .filter((item) => item.matchesQuery)
+      .sort((a, b) => {
+        if (a.matchesGroup !== b.matchesGroup) {
+          return Number(b.matchesGroup) - Number(a.matchesGroup);
+        }
+        if (a.topicName !== b.topicName) {
+          return a.topicName.localeCompare(b.topicName);
+        }
+        return a.groupName.localeCompare(b.groupName);
+      });
+  }, [groupsById, lessonSearchTerm, placeholderAction, topicsById, unassignedLessons]);
 
   useEffect(() => {
     if (!lessons.length && !availablePlaceholders.length && !earliestScheduledSlotDate) {
@@ -1937,16 +1992,6 @@ export function CalendarWorkspace() {
     dayEntryRefs.current.clear();
   }, []);
 
-  const handleEventClick = useCallback(
-    (arg: EventClickArg) => {
-      arg.jsEvent.preventDefault();
-      clearTooltip();
-      const dateProp = (arg.event.extendedProps.date as string | undefined) ?? arg.event.startStr;
-      openDayDetails(dateProp, arg.event.id);
-    },
-    [clearTooltip, openDayDetails]
-  );
-
   const handleDateClick = useCallback(
     (arg: DateClickArg) => {
       markManualNavigation();
@@ -2102,57 +2147,52 @@ export function CalendarWorkspace() {
     []
   );
 
-  const handleSaveQuickLesson = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (!creatingLessonDraft) {
-        return;
-      }
+  const persistLessonDraft = useCallback(
+    async (draft: QuickLessonDraftState) => {
+      const fail = (message: string): never => {
+        throw Object.assign(new Error(message), { name: 'LessonDraftError' as const });
+      };
 
-      const slot = availablePlaceholders.find((placeholder) => placeholder.id === creatingLessonDraft.slotId);
+      const slot = availablePlaceholders.find((placeholder) => placeholder.id === draft.slotId);
       if (!slot) {
-        setCreateLessonError('This session is no longer available. Refresh the calendar and try again.');
-        return;
+        fail('This session is no longer available. Refresh the calendar and try again.');
       }
 
       if (calendarData.lessons.some((lesson) => lesson.placeholderId === slot.id)) {
-        setCreateLessonError('A lesson is already linked to this session.');
-        return;
+        fail('A lesson is already linked to this session.');
       }
 
-      const group = groupsById.get(slot.groupId);
-      if (!group) {
-        setCreateLessonError('Unable to determine the class group for this session.');
-        return;
+      if (!groupsById.has(slot.groupId)) {
+        fail('Unable to determine the class group for this session.');
       }
 
-      const topicId = creatingLessonDraft.topicId;
+      const topicId = draft.topicId;
       if (!topicId) {
-        setCreateLessonError('Select a topic before saving this lesson.');
-        return;
+        fail('Select a topic before saving this lesson.');
       }
 
       const topic = topicsById.get(topicId);
       if (!topic) {
-        setCreateLessonError('Choose a valid topic before saving this lesson.');
-        return;
+        fail('Choose a valid topic before saving this lesson.');
       }
 
-      const status = creatingLessonDraft.status;
-      const objectiveLines = creatingLessonDraft.focus
+      const status = draft.status;
+      const objectiveLines = draft.focus
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
-      const instructions = creatingLessonDraft.activityNotes.trim();
-      const studySuggestion = creatingLessonDraft.studySuggestion.trim();
+      const instructions = draft.activityNotes.trim();
+      const studySuggestion = draft.studySuggestion.trim();
 
       const lessonId =
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `lesson_${Date.now()}`;
 
+      const fallbackTitle = draft.focus.trim() || topic.name || 'Untitled lesson';
       const newLesson: Lesson = {
         id: lessonId,
+        title: fallbackTitle,
         groupId: slot.groupId,
         topicId,
         trimesterId: slot.trimesterId,
@@ -2170,26 +2210,249 @@ export function CalendarWorkspace() {
         completionNotes: studySuggestion || undefined,
       };
 
+      await DataStore.save('lessons', newLesson);
+      return newLesson;
+    },
+    [availablePlaceholders, calendarData.lessons, groupsById, topicsById]
+  );
+
+  const handleSaveQuickLesson = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!creatingLessonDraft) {
+        return;
+      }
+
       try {
         setIsCreatingLesson(true);
         setCreateLessonError(null);
-        await DataStore.save('lessons', newLesson);
+        const newLesson = await persistLessonDraft(creatingLessonDraft);
         setCreatingLessonDraft(null);
         setFocusedDayEntryId(newLesson.id);
       } catch (error) {
-        console.error('Failed to create lesson from calendar', error);
-        setCreateLessonError('Unable to create the lesson. Please try again.');
+        if (error instanceof Error) {
+          if (error.name !== 'LessonDraftError') {
+            console.error('Failed to create lesson from calendar', error);
+          }
+          setCreateLessonError(error.message);
+        } else {
+          console.error('Failed to create lesson from calendar', error);
+          setCreateLessonError('Unable to create the lesson. Please try again.');
+        }
       } finally {
         setIsCreatingLesson(false);
       }
     },
-    [
-      availablePlaceholders,
-      calendarData.lessons,
-      creatingLessonDraft,
-      groupsById,
-      topicsById,
-    ]
+    [creatingLessonDraft, persistLessonDraft]
+  );
+
+  const handlePlaceholderDraftFieldChange = useCallback(
+    <K extends QuickLessonDraftField>(field: K, value: QuickLessonDraftState[K]) => {
+      setPlaceholderDraft((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return { ...current, [field]: value };
+      });
+    },
+    []
+  );
+
+  const loadUnassignedLessons = useCallback(async () => {
+    setIsLoadingUnassignedLessons(true);
+    setAttachLessonError(null);
+
+    try {
+      const lessons = await DataStore.getAll('lessons');
+      const available = lessons.filter((lesson) => !lesson.placeholderId);
+      setUnassignedLessons(available);
+    } catch (error) {
+      console.error('Failed to load unassigned lessons', error);
+      setAttachLessonError('Unable to load available lessons. Please try again.');
+      setUnassignedLessons([]);
+    } finally {
+      setIsLoadingUnassignedLessons(false);
+    }
+  }, []);
+
+  const openPlaceholderAction = useCallback(
+    (slotId: string, mode: 'create' | 'attach' = 'create') => {
+      const slot = calendarData.placeholders.find((placeholder) => placeholder.id === slotId);
+      if (!slot) {
+        setDayActionError('This session is no longer available. Refresh the calendar and try again.');
+        return;
+      }
+
+      const group = groupsById.get(slot.groupId) ?? null;
+      const level = group ? levelsById.get(group.levelId) ?? null : null;
+      const availableTopics = calendarData.topics
+        .filter((topic) => {
+          if (topic.trimesterId !== slot.trimesterId) {
+            return false;
+          }
+          if (!group) {
+            return true;
+          }
+          return topic.levelIds.includes(group.levelId);
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      setPlaceholderAction({
+        slot,
+        group,
+        level,
+        availableTopics,
+      });
+      setPlaceholderActionMode(mode);
+      setPlaceholderDraft({
+        slotId: slot.id,
+        topicId: availableTopics[0]?.id ?? '',
+        status: 'planned',
+        focus: '',
+        activityNotes: '',
+        studySuggestion: '',
+      });
+      setPlaceholderCreateError(null);
+      setLessonSearchTerm('');
+      setSelectedAttachLessonId(null);
+      setAttachLessonError(null);
+      setIsAttachingLesson(false);
+    },
+    [calendarData.placeholders, calendarData.topics, groupsById, levelsById]
+  );
+
+  const closePlaceholderAction = useCallback(() => {
+    setPlaceholderAction(null);
+    setPlaceholderDraft(null);
+    setPlaceholderCreateError(null);
+    setPlaceholderActionMode('create');
+    setLessonSearchTerm('');
+    setSelectedAttachLessonId(null);
+    setAttachLessonError(null);
+    setIsAttachingLesson(false);
+  }, []);
+
+  const handlePlaceholderModeChange = useCallback(
+    (mode: 'create' | 'attach') => {
+      setPlaceholderActionMode(mode);
+      if (mode === 'attach' && !isLoadingUnassignedLessons && unassignedLessons.length === 0) {
+        void loadUnassignedLessons();
+      }
+    },
+    [isLoadingUnassignedLessons, loadUnassignedLessons, unassignedLessons.length]
+  );
+
+  useEffect(() => {
+    if (!placeholderAction) {
+      return;
+    }
+
+    void loadUnassignedLessons();
+  }, [loadUnassignedLessons, placeholderAction]);
+
+  useEffect(() => {
+    if (!placeholderAction) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePlaceholderAction();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closePlaceholderAction, placeholderAction]);
+
+  const handleModalCreateLesson = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!placeholderDraft) {
+        return;
+      }
+
+      try {
+        setIsSavingPlaceholderLesson(true);
+        setPlaceholderCreateError(null);
+        const newLesson = await persistLessonDraft(placeholderDraft);
+        setFocusedDayEntryId(newLesson.id);
+        closePlaceholderAction();
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.name !== 'LessonDraftError') {
+            console.error('Failed to create lesson from placeholder modal', error);
+          }
+          setPlaceholderCreateError(error.message);
+        } else {
+          console.error('Failed to create lesson from placeholder modal', error);
+          setPlaceholderCreateError('Unable to create the lesson. Please try again.');
+        }
+      } finally {
+        setIsSavingPlaceholderLesson(false);
+      }
+    },
+    [closePlaceholderAction, persistLessonDraft, placeholderDraft, setFocusedDayEntryId]
+  );
+
+  const handleAttachSelectedLesson = useCallback(async () => {
+    if (!placeholderAction) {
+      return;
+    }
+
+    if (!selectedAttachLessonId) {
+      setAttachLessonError('Select a lesson to attach.');
+      return;
+    }
+
+    const lesson = unassignedLessons.find((item) => item.id === selectedAttachLessonId);
+    if (!lesson) {
+      setAttachLessonError('Unable to find the selected lesson. Please try again.');
+      return;
+    }
+
+    try {
+      setIsAttachingLesson(true);
+      setAttachLessonError(null);
+      const updates: Partial<Lesson> = {
+        date: placeholderAction.slot.date,
+        startTime: placeholderAction.slot.startTime,
+        endTime: placeholderAction.slot.endTime,
+        placeholderId: placeholderAction.slot.id,
+        groupId: placeholderAction.slot.groupId,
+        trimesterId: placeholderAction.slot.trimesterId,
+      };
+      if (lesson.status === 'draft') {
+        updates.status = 'planned';
+      }
+      await DataStore.update('lessons', lesson.id, updates);
+      setFocusedDayEntryId(lesson.id);
+      closePlaceholderAction();
+    } catch (error) {
+      console.error('Failed to attach lesson to placeholder', error);
+      setAttachLessonError('Unable to attach the lesson. Please try again.');
+    } finally {
+      setIsAttachingLesson(false);
+    }
+  }, [closePlaceholderAction, placeholderAction, selectedAttachLessonId, setFocusedDayEntryId, unassignedLessons]);
+
+  const handleEventClick = useCallback(
+    (arg: EventClickArg) => {
+      arg.jsEvent.preventDefault();
+      clearTooltip();
+      const kind = (arg.event.extendedProps.kind as string | undefined) ?? 'lesson';
+      if (kind === 'placeholder') {
+        openPlaceholderAction(arg.event.id);
+        return;
+      }
+      const dateProp = (arg.event.extendedProps.date as string | undefined) ?? arg.event.startStr;
+      openDayDetails(dateProp, arg.event.id);
+    },
+    [clearTooltip, openDayDetails, openPlaceholderAction]
   );
 
   const handlePlaceholderFieldChange = useCallback(
@@ -2467,6 +2730,21 @@ export function CalendarWorkspace() {
   const moreLinkClassNames = useMemo(() => (activeView === 'dayGridMonth' ? ['fc-more-chip'] : []), [activeView]);
   const dayMaxEventsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
   const dayMaxEventRowsValue: number | boolean = activeView === 'dayGridMonth' ? 3 : false;
+  const placeholderDateLabel = placeholderAction ? formatDateLabel(placeholderAction.slot.date) : '';
+  const placeholderTimeLabel = placeholderAction
+    ? formatTimeRange(placeholderAction.slot.startTime, placeholderAction.slot.endTime)
+    : '';
+  const placeholderGroupLabel = placeholderAction?.group?.displayName ?? 'Unknown group';
+  const placeholderLevelLabel = placeholderAction?.level
+    ? formatOrdinalGrade(placeholderAction.level.gradeNumber)
+    : null;
+  const placeholderSourceLabel = placeholderAction
+    ? placeholderAction.slot.source === 'schedule'
+      ? 'Scheduled session'
+      : placeholderAction.slot.source === 'expected'
+      ? 'Projected session'
+      : 'Placeholder slot'
+    : '';
 
   return (
     <section
@@ -3284,6 +3562,281 @@ export function CalendarWorkspace() {
                   {totalDayEntries === 0
                     ? 'No lessons or sessions scheduled for this day yet.'
                     : 'The selected entry is no longer available. Show the full day to review remaining sessions.'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {placeholderAction ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="placeholder-action-heading"
+          onClick={closePlaceholderAction}
+        >
+          <div
+            className="relative w-full max-w-4xl overflow-hidden rounded-3xl border border-white/10 bg-slate-900 shadow-2xl shadow-black/50"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={closePlaceholderAction}
+              className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition hover:border-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              aria-label="Close placeholder planner"
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </button>
+            <div className="border-b border-white/5 p-6 pr-16">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Plan this session</p>
+              <h3 id="placeholder-action-heading" className="mt-1 text-xl font-semibold text-white">
+                {placeholderGroupLabel}
+              </h3>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                {placeholderDateLabel ? (
+                  <span className="inline-flex items-center rounded-full bg-white/5 px-3 py-1">
+                    {placeholderDateLabel}
+                  </span>
+                ) : null}
+                {placeholderTimeLabel ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-3 py-1">
+                    <Clock className="h-3.5 w-3.5" aria-hidden />
+                    {placeholderTimeLabel}
+                  </span>
+                ) : null}
+                {placeholderLevelLabel ? (
+                  <span className="inline-flex items-center rounded-full bg-white/5 px-3 py-1">
+                    {placeholderLevelLabel}
+                  </span>
+                ) : null}
+                {placeholderSourceLabel ? (
+                  <span className="inline-flex items-center rounded-full bg-white/5 px-3 py-1">
+                    {placeholderSourceLabel}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <div className="p-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="inline-flex gap-2 rounded-full border border-white/10 bg-white/5 p-1 text-sm font-semibold uppercase tracking-wide">
+                  <button
+                    type="button"
+                    onClick={() => handlePlaceholderModeChange('create')}
+                    className={`rounded-full px-4 py-1.5 transition ${
+                      placeholderActionMode === 'create'
+                        ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    Create new lesson
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePlaceholderModeChange('attach')}
+                    className={`rounded-full px-4 py-1.5 transition ${
+                      placeholderActionMode === 'attach'
+                        ? 'bg-accent/25 text-white shadow-[0_0_0_1px_rgba(99,102,241,0.4)]'
+                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    Attach existing lesson
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400">
+                  {placeholderActionMode === 'create'
+                    ? 'Capture a quick shell for this slot without leaving the calendar.'
+                    : 'Pick a reusable lesson. We will align its schedule details automatically.'}
+                </p>
+              </div>
+              {placeholderActionMode === 'create' ? (
+                placeholderAction.availableTopics.length > 0 ? (
+                  <form className="mt-6 space-y-4" onSubmit={handleModalCreateLesson}>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                        <span>Topic</span>
+                        <select
+                          value={placeholderDraft?.topicId ?? ''}
+                          onChange={(event) =>
+                            handlePlaceholderDraftFieldChange('topicId', event.target.value)
+                          }
+                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        >
+                          <option value="" disabled>
+                            Select topic
+                          </option>
+                          {placeholderAction.availableTopics.map((topic) => (
+                            <option key={topic.id} value={topic.id} className="bg-slate-900 text-slate-100">
+                              {topic.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                        <span>Status</span>
+                        <select
+                          value={placeholderDraft?.status ?? 'planned'}
+                          onChange={(event) =>
+                            handlePlaceholderDraftFieldChange('status', event.target.value as LessonStatus)
+                          }
+                          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        >
+                          {LESSON_STATUS_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id} className="bg-slate-900 text-slate-100">
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                      <span>Lesson focus</span>
+                      <textarea
+                        value={placeholderDraft?.focus ?? ''}
+                        onChange={(event) => handlePlaceholderDraftFieldChange('focus', event.target.value)}
+                        rows={2}
+                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        placeholder="What are students working on?"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                      <span>Activity notes</span>
+                      <textarea
+                        value={placeholderDraft?.activityNotes ?? ''}
+                        onChange={(event) =>
+                          handlePlaceholderDraftFieldChange('activityNotes', event.target.value)
+                        }
+                        rows={3}
+                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        placeholder="Key steps, tools, or centers for this class"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                      <span>Study suggestion</span>
+                      <textarea
+                        value={placeholderDraft?.studySuggestion ?? ''}
+                        onChange={(event) =>
+                          handlePlaceholderDraftFieldChange('studySuggestion', event.target.value)
+                        }
+                        rows={2}
+                        className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        placeholder="Reminders or take-home tasks"
+                      />
+                    </label>
+                    {placeholderCreateError ? (
+                      <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                        {placeholderCreateError}
+                      </p>
+                    ) : null}
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={closePlaceholderAction}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-2 rounded-full border border-accent/60 bg-accent/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:border-accent/80 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                        disabled={isSavingPlaceholderLesson || placeholderAction.availableTopics.length === 0}
+                      >
+                        {isSavingPlaceholderLesson ? 'Saving…' : 'Save lesson'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="mt-6 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4 text-sm text-slate-300">
+                    Add a topic for this class level before creating a lesson in this slot.
+                  </div>
+                )
+              ) : (
+                <div className="mt-6 space-y-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <label className="w-full sm:max-w-xs">
+                      <span className="sr-only">Search lessons</span>
+                      <input
+                        type="search"
+                        value={lessonSearchTerm}
+                        onChange={(event) => setLessonSearchTerm(event.target.value)}
+                        placeholder="Search lessons by topic or group"
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                      />
+                    </label>
+                    <p className="text-xs text-slate-400">
+                      {isLoadingUnassignedLessons
+                        ? 'Loading available lessons…'
+                        : `${filteredUnassignedLessons.length} lesson${
+                            filteredUnassignedLessons.length === 1 ? '' : 's'
+                          } available`}
+                    </p>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto rounded-2xl border border-white/10 bg-slate-950/60">
+                    {isLoadingUnassignedLessons ? (
+                      <p className="px-4 py-8 text-center text-sm text-slate-400">Loading lessons…</p>
+                    ) : filteredUnassignedLessons.length > 0 ? (
+                      <ul className="divide-y divide-white/5">
+                        {filteredUnassignedLessons.map(({ lesson, topicName, groupName, matchesGroup }) => {
+                          const isSelected = selectedAttachLessonId === lesson.id;
+                          const statusLabel = titleCaseStatus(lesson.status);
+                          return (
+                            <li key={lesson.id}>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedAttachLessonId(lesson.id)}
+                                className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${
+                                  isSelected
+                                    ? 'border-l-4 border-accent/80 bg-accent/10 text-white shadow-inner shadow-accent/20'
+                                    : 'hover:bg-white/5'
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                                  <span className="font-semibold text-white">{topicName}</span>
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1 text-xs text-slate-200">
+                                    {statusLabel}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                                  <span>{groupName}</span>
+                                  {matchesGroup ? (
+                                    <span className="inline-flex items-center rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-200">
+                                      Matches slot group
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="px-4 py-8 text-center text-sm text-slate-400">
+                        No unassigned lessons match your search.
+                      </p>
+                    )}
+                  </div>
+                  {attachLessonError ? (
+                    <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                      {attachLessonError}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={closePlaceholderAction}
+                      className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:border-white/30 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAttachSelectedLesson}
+                      className="inline-flex items-center gap-2 rounded-full border border-accent/60 bg-accent/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:border-accent/80 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+                      disabled={isAttachingLesson || !selectedAttachLessonId}
+                    >
+                      {isAttachingLesson ? 'Attaching…' : 'Attach lesson'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

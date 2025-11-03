@@ -175,3 +175,34 @@ export interface BackupPayload {
   exportedAt: string;
   data: Record<string, unknown[]>;
 }
+
+// Documents Library types
+export type DocumentType = 'pdf' | 'doc' | 'docx' | 'xls' | 'xlsx' | 'ppt' | 'pptx' | 'txt' | 'md' | 'other';
+
+export interface Document {
+  id: Identifier;
+  name: string;
+  type: DocumentType;
+  size: number; // bytes
+  uploadedAt: string; // ISO datetime
+  lastModified?: string; // ISO datetime from file metadata
+  path?: string; // relative path if from folder upload
+  mimeType: string;
+  content?: string; // extracted text content (optional for initial phase)
+  thumbnail?: string; // base64 thumbnail for preview
+  tags?: string[];
+  description?: string;
+  linkedTo?: Array<{
+    type: 'lesson' | 'topic' | 'level';
+    id: Identifier;
+  }>;
+}
+
+export interface DocumentVector {
+  id: Identifier;
+  documentId: Identifier;
+  chunkIndex: number;
+  chunkText: string;
+  embedding?: number[]; // vector embedding (optional for Phase 1)
+  metadata?: Record<string, unknown>; // additional chunk metadata
+}

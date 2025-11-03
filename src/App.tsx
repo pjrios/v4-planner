@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { parseISO } from 'date-fns';
 import type { LucideIcon } from 'lucide-react';
-import { CalendarClock, CopyCheck, GraduationCap, LayoutDashboard, Layers3, Sparkles } from 'lucide-react';
+import { BookOpen, CalendarClock, CopyCheck, FileText, GraduationCap, LayoutDashboard, Layers3, Sparkles } from 'lucide-react';
 import { AppShell, Sidebar, TopBar } from './components/layout';
 import type { SidebarSection } from './components/layout';
-import { TrimesterManager } from './components/trimester';
-import { HolidayManager } from './components/holiday';
-import { LevelManager } from './components/level';
-import { GroupManager } from './components/group';
-import { ScheduleBuilder } from './components/schedule';
 import { CalendarWorkspace } from './components/calendar';
 import { LessonWorkspace } from './components/lesson';
+import { StructureWorkspace } from './components/structure';
+import { DocumentsWorkspace } from './components/documents';
+import { DataStore } from './data/db';
+import type { Trimester } from './data/types';
 
-type WorkspaceId = 'overview' | 'calendar' | 'lessons' | 'structure' | 'reports' | 'settings';
+type WorkspaceId = 'overview' | 'calendar' | 'lessons' | 'structure' | 'documents' | 'reports' | 'settings';
 
 const planningSections: SidebarSection[] = [
   {
@@ -34,12 +34,19 @@ const planningSections: SidebarSection[] = [
         id: 'lessons',
         label: 'Lessons',
         description: 'Templates, rubrics, resources',
+        icon: BookOpen,
       },
       {
         id: 'structure',
         label: 'Levels & schedules',
         description: 'Trimesters, holidays, groups',
         icon: Layers3,
+      },
+      {
+        id: 'documents',
+        label: 'Documents',
+        description: 'Files, folders, and library',
+        icon: FileText,
       },
     ],
   },
@@ -91,6 +98,7 @@ const highlights = [
 
 export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('overview');
+  const [trimesters, setTrimesters] = useState<Trimester[]>([]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -107,6 +115,26 @@ export default function App() {
       window.removeEventListener('planner:navigate', handler as EventListener);
     };
   }, []);
+
+  const loadTrimesters = useCallback(async () => {
+    const all = await DataStore.getAll('trimesters');
+    all.sort((a, b) => a.startDate.localeCompare(b.startDate));
+    setTrimesters(all);
+  }, []);
+
+  useEffect(() => {
+    void loadTrimesters();
+  }, [loadTrimesters]);
+
+  // Find current trimester
+  const currentTrimester = useMemo(() => {
+    const today = new Date();
+    return trimesters.find((trimester) => {
+      const start = parseISO(trimester.startDate);
+      const end = parseISO(trimester.endDate);
+      return today >= start && today <= end;
+    });
+  }, [trimesters]);
 
   const workspaceConfig = useMemo(
     () => ({
@@ -126,6 +154,10 @@ export default function App() {
         title: 'Structure workspace',
         subtitle: 'Manage trimesters, levels, groups, schedules, and holidays in one place.',
       },
+      documents: {
+        title: 'Documents Library',
+        subtitle: 'Upload, organize, and search through your teaching materials.',
+      },
       reports: {
         title: 'Reports overview',
         subtitle: 'Track coverage, pacing, and workload insights (coming soon).',
@@ -143,6 +175,7 @@ export default function App() {
     calendar: 'Calendar',
     lessons: 'Lessons',
     structure: 'Structure',
+    documents: 'Documents',
     reports: 'Reports',
     settings: 'Settings',
   };
@@ -166,11 +199,13 @@ export default function App() {
       case 'structure':
         return (
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
-            <TrimesterManager />
-            <LevelManager />
-            <GroupManager />
-            <ScheduleBuilder />
-            <HolidayManager />
+            <StructureWorkspace />
+          </div>
+        );
+      case 'documents':
+        return (
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
+            <DocumentsWorkspace />
           </div>
         );
       case 'reports':
@@ -213,6 +248,15 @@ export default function App() {
             { id: 'home', label: 'Home' },
             { id: activeWorkspace, label: workspaceBreadcrumbLabel[activeWorkspace] },
           ]}
+          trimesterInfo={
+            currentTrimester
+              ? {
+                  name: currentTrimester.name,
+                  startDate: currentTrimester.startDate,
+                  endDate: currentTrimester.endDate,
+                }
+              : undefined
+          }
         />
       }
     >

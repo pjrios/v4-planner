@@ -479,6 +479,7 @@ export function LessonWorkspace() {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [isCopyWizardOpen, setIsCopyWizardOpen] = useState(false);
   const [isCreateLessonOpen, setIsCreateLessonOpen] = useState(false);
+  const [isCreateTopicOpen, setIsCreateTopicOpen] = useState(false);
   const [expandedLevelIds, setExpandedLevelIds] = useState<string[]>([]);
   const [expandedTrimesterKeys, setExpandedTrimesterKeys] = useState<string[]>([]);
   const [createLessonForm, setCreateLessonForm] = useState<CreateLessonFormState>({
@@ -493,6 +494,8 @@ export function LessonWorkspace() {
   });
   const [createLessonError, setCreateLessonError] = useState<string | null>(null);
   const [isCreatingLesson, setIsCreatingLesson] = useState(false);
+  const [createTopicForm, setCreateTopicForm] = useState({ name: '', description: '' });
+  const [isCreatingTopic, setIsCreatingTopic] = useState(false);
   const [viewMode, setViewMode] = useState<'hub' | 'planner'>('hub');
   const saveTimeoutRef = useRef<number>();
   const skipNextSaveRef = useRef(true);
@@ -1352,6 +1355,47 @@ export function LessonWorkspace() {
     setLastSavedAt(null);
   }, [selectedLesson]);
 
+  const handleCreateTopic = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!selectedLesson || !lessonDraft) return;
+
+      const { name, description } = createTopicForm;
+      if (!name.trim()) return;
+
+      const levelId = selectedLesson.level?.id;
+      const trimesterId = lessonDraft.trimesterId;
+      if (!levelId || !trimesterId) return;
+
+      const topicId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `topic_${Date.now()}`;
+
+      try {
+        setIsCreatingTopic(true);
+        const newTopic: Topic = {
+          id: topicId,
+          name: name.trim(),
+          description: description.trim() || undefined,
+          trimesterId,
+          levelIds: [levelId],
+        };
+
+        await DataStore.save('topics', newTopic);
+        await loadLessons(); // Reload to get the new topic
+        setLessonDraft({ ...lessonDraft, topicId });
+        setIsCreateTopicOpen(false);
+        setCreateTopicForm({ name: '', description: '' });
+      } catch (error) {
+        console.error('Failed to create topic', error);
+      } finally {
+        setIsCreatingTopic(false);
+      }
+    },
+    [createTopicForm, loadLessons, lessonDraft, selectedLesson]
+  );
+
   useEffect(() => {
     if (!isDrawerOpen) return;
 
@@ -1452,7 +1496,7 @@ export function LessonWorkspace() {
         setSaveState('error');
         setSaveError('Unable to save changes. Try again in a moment.');
       }
-    }, 800);
+    }, 2000);
 
     return () => {
       if (saveTimeoutRef.current) {
@@ -1529,6 +1573,30 @@ export function LessonWorkspace() {
   const closeDrawer = useCallback(() => {
     setActiveLessonId(null);
   }, []);
+
+  const handleDeleteLesson = useCallback(async () => {
+    if (!activeLessonId) {
+      return;
+    }
+
+    const lesson = lessons.find((l) => l.lesson.id === activeLessonId);
+    if (!lesson) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete lesson "${lesson.lesson.title || lesson.topic?.name || 'Untitled lesson'}"? This action cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await DataStore.remove('lessons', activeLessonId);
+      setActiveLessonId(null);
+    } catch (error) {
+      console.error('Failed to delete lesson', error);
+      alert('Unable to delete this lesson. Please try again.');
+    }
+  }, [activeLessonId, lessons]);
 
   const copyLessonToTargets = useCallback(
     async (targetLessonIds: string[]) => {
@@ -1614,19 +1682,7 @@ export function LessonWorkspace() {
       className="rounded-3xl border border-white/10 bg-slate-900/80 p-8 text-slate-200 shadow-xl shadow-slate-950/20"
     >
       <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
-        <div className="space-y-2">
-          <span className="inline-flex items-center gap-2 rounded-full bg-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent">
-            <NotebookTabs className="h-3.5 w-3.5" aria-hidden />
-            Lesson workspace
-          </span>
-          <h2 id="lesson-workspace-heading" className="text-2xl font-semibold text-white">
-            Plan structured lessons with reusable shells
-          </h2>
-          <p className="max-w-2xl text-sm text-slate-400">
-            Preview upcoming lessons, then open the drawer to organize objectives, activities, resources, and review notes without leaving the calendar.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 self-start">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1 text-xs font-semibold uppercase tracking-wide text-slate-300">
             <button
               type="button"
@@ -1909,7 +1965,7 @@ export function LessonWorkspace() {
           <button
             type="button"
             aria-label="Close new lesson dialog"
-            className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
             onClick={closeCreateLesson}
           />
           <div
@@ -2156,18 +2212,18 @@ export function LessonWorkspace() {
       ) : null}
 
       {isDrawerOpen && selectedLesson && lessonForPanels ? (
-        <div className="fixed inset-0 z-40 flex">
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
           <button
             type="button"
             aria-label="Close lesson drawer"
-            className="flex-1 bg-slate-950/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
             onClick={closeDrawer}
           />
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="lesson-drawer-title"
-            className="relative flex h-full w-full max-w-3xl flex-col border-l border-white/10 bg-slate-950/95 text-slate-100 shadow-2xl"
+            className="relative z-10 flex h-[90vh] w-full max-w-4xl flex-col rounded-2xl border border-white/20 bg-slate-950/98 text-slate-100 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-6 border-b border-white/10 p-6">
               <div className="space-y-2">
@@ -2188,6 +2244,14 @@ export function LessonWorkspace() {
               </div>
               <div className="flex items-center gap-3">
                 <SaveStatus state={saveState} label={lastSavedLabel} error={saveError} />
+                <button
+                  type="button"
+                  onClick={handleDeleteLesson}
+                  className="rounded-full border border-red-500/50 p-2 text-red-300 transition hover:border-red-500 hover:text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  <span className="sr-only">Delete lesson</span>
+                </button>
                 <button
                   type="button"
                   onClick={closeDrawer}
@@ -2249,6 +2313,7 @@ export function LessonWorkspace() {
                           const objectives = parseList(value);
                           updatePhase('pre', { objectives: objectives.length ? objectives : undefined });
                         }}
+                        onOpenCreateTopic={() => setIsCreateTopicOpen(true)}
                       />
                     ) : null}
                     {tab.id === 'activities' ? (
@@ -2314,6 +2379,75 @@ export function LessonWorkspace() {
           ) : null}
         </div>
       ) : null}
+
+      {isCreateTopicOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close create topic dialog"
+            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setIsCreateTopicOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-topic-title"
+            className="relative z-10 w-full max-w-2xl rounded-2xl border border-white/20 bg-slate-950/98 text-slate-100 shadow-2xl"
+          >
+            <form onSubmit={handleCreateTopic} className="flex flex-col gap-6 p-6">
+              <header className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-accent">
+                  <Plus className="h-4 w-4" aria-hidden />
+                  Create new topic
+                </div>
+                <h3 id="create-topic-title" className="text-2xl font-semibold text-white">Add a new topic</h3>
+                <p className="text-sm text-slate-400">
+                  Create a topic for {selectedLesson?.level
+                    ? `Grade ${selectedLesson.level.gradeNumber} ${selectedLesson.level.subject}`
+                    : 'this level'}
+                </p>
+              </header>
+              <div className="space-y-4">
+                <label className="flex flex-col gap-2 text-sm">
+                  <span className="font-semibold text-slate-200">Topic name</span>
+                  <input
+                    type="text"
+                    value={createTopicForm.name}
+                    onChange={(event) => setCreateTopicForm({ ...createTopicForm, name: event.target.value })}
+                    placeholder="e.g., Introduction to Fractions"
+                    className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white shadow-inner shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm">
+                  <span className="font-semibold text-slate-200">Description (optional)</span>
+                  <textarea
+                    value={createTopicForm.description}
+                    onChange={(event) => setCreateTopicForm({ ...createTopicForm, description: event.target.value })}
+                    placeholder="Brief overview of this topic"
+                    className="h-32 w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateTopicOpen(false)}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/30 hover:bg-white/10"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingTopic || !createTopicForm.name.trim()}
+                  className="inline-flex items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-accent disabled:cursor-not-allowed disabled:bg-accent/40"
+                >
+                  {isCreatingTopic ? 'Creating...' : 'Create topic'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2375,9 +2509,10 @@ type OverviewPanelProps = {
   topics: Topic[];
   onFieldChange: (updates: Partial<Lesson>) => void;
   onObjectivesChange: (value: string) => void;
+  onOpenCreateTopic?: () => void;
 };
 
-function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChange }: OverviewPanelProps) {
+function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChange, onOpenCreateTopic }: OverviewPanelProps) {
   const titleValue = lesson.title ?? '';
   const objectivesValue = (lesson.preActivity?.objectives ?? []).join('\n');
   const statusOptions = Object.entries(LESSON_STATUS_LABELS);
@@ -2407,7 +2542,19 @@ function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChan
             />
           </label>
           <label className="flex flex-col gap-2 text-sm">
-            <span className="font-semibold text-slate-200">Linked topic</span>
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-200">Linked topic</span>
+              {onOpenCreateTopic ? (
+                <button
+                  type="button"
+                  onClick={onOpenCreateTopic}
+                  className="inline-flex items-center justify-center h-6 w-6 rounded-full border border-accent/40 bg-accent/10 text-accent transition hover:border-accent/60 hover:bg-accent/20"
+                  title="Create new topic"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden />
+                </button>
+              ) : null}
+            </div>
             <select
               value={topicValue}
               onChange={(event) => onFieldChange({ topicId: event.target.value })}
@@ -2467,7 +2614,7 @@ function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChan
           value={objectivesValue}
           onChange={(event) => onObjectivesChange(event.target.value)}
           placeholder="List objectives, one per line"
-          className="mt-4 h-32 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          className="mt-4 h-48 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
         />
         {detail.topic?.description ? (
           <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
@@ -2486,7 +2633,7 @@ function OverviewPanel({ detail, lesson, topics, onFieldChange, onObjectivesChan
           value={notesValue}
           onChange={(event) => onFieldChange({ completionNotes: event.target.value || undefined })}
           placeholder="Capture reminders, differentiation ideas, or resource links."
-          className="mt-4 h-28 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          className="mt-4 h-48 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-3 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
         />
       </section>
     </div>
@@ -2587,7 +2734,7 @@ function ActivityFormCard({
             <textarea
               value={stringifyList(data?.objectives)}
               onChange={(event) => onChange({ objectives: parseList(event.target.value) })}
-              className="h-20 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="h-32 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </FieldBlock>
         ) : null}
@@ -2599,7 +2746,7 @@ function ActivityFormCard({
             <textarea
               value={data?.preparation ?? ''}
               onChange={(event) => onChange({ preparation: event.target.value || undefined })}
-              className="h-16 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="h-24 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </FieldBlock>
         ) : null}
@@ -2611,7 +2758,7 @@ function ActivityFormCard({
             <textarea
               value={data?.studentPrep ?? ''}
               onChange={(event) => onChange({ studentPrep: event.target.value || undefined })}
-              className="h-16 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="h-24 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </FieldBlock>
         ) : null}
@@ -2619,7 +2766,7 @@ function ActivityFormCard({
           <textarea
             value={data?.instructions ?? ''}
             onChange={(event) => onChange({ instructions: event.target.value || undefined })}
-            className={`h-32 rounded-xl border bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
+            className={`h-48 w-full rounded-xl border bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
               errors.instructions ? 'border-red-500/60' : 'border-white/10'
             }`}
             aria-invalid={Boolean(errors.instructions)}
@@ -2632,7 +2779,7 @@ function ActivityFormCard({
           <textarea
             value={stringifyList(data?.materials)}
             onChange={(event) => onChange({ materials: parseList(event.target.value) })}
-            className="h-20 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            className="h-32 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           />
         </FieldBlock>
         {phase !== 'pre' ? (
@@ -2656,7 +2803,7 @@ function ActivityFormCard({
             <textarea
               value={stringifyDifferentiation(data?.differentiation)}
               onChange={(event) => onChange({ differentiation: parseDifferentiationInput(event.target.value) })}
-              className="h-20 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="h-32 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </FieldBlock>
         ) : null}
@@ -2665,7 +2812,7 @@ function ActivityFormCard({
             <textarea
               value={data?.assessment ?? ''}
               onChange={(event) => onChange({ assessment: event.target.value || undefined })}
-              className="h-16 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="h-24 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </FieldBlock>
         ) : null}
@@ -2673,14 +2820,14 @@ function ActivityFormCard({
           <textarea
             value={data?.reflection ?? ''}
             onChange={(event) => onChange({ reflection: event.target.value || undefined })}
-            className="h-16 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            className="h-24 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           />
         </FieldBlock>
         <FieldBlock label={homeworkLabel} description="Optional take-home work or next steps.">
           <textarea
             value={data?.homework ?? ''}
             onChange={(event) => onChange({ homework: event.target.value || undefined })}
-            className="h-16 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            className="h-24 w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           />
         </FieldBlock>
         <div className="flex items-center justify-between rounded-xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-300">
@@ -3225,36 +3372,36 @@ function SaveStatus({ state, label, error }: SaveStatusProps) {
   switch (state) {
     case 'saving':
       content = (
-        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-accent">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Saving…
+        <span className="inline-flex items-center gap-2" title="Saving changes…">
+          <span className="h-2 w-2 rounded-full bg-slate-500 animate-pulse" aria-hidden />
         </span>
       );
       break;
     case 'pending':
       content = (
-        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
-          <AlertTriangle className="h-3.5 w-3.5 text-yellow-300" aria-hidden /> Unsaved changes
+        <span className="inline-flex items-center gap-2" title="Autosaving…">
+          <span className="h-2 w-2 rounded-full bg-yellow-400 animate-pulse" aria-hidden />
         </span>
       );
       break;
     case 'error':
       content = (
-        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-red-300">
+        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-red-300" title={error ?? 'Unable to save'}>
           <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> {error ?? 'Unable to save'}
         </span>
       );
       break;
     case 'saved':
       content = (
-        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {label}
+        <span className="inline-flex items-center gap-2" title={label}>
+          <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
         </span>
       );
       break;
     default:
       content = (
-        <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Autosave on
+        <span className="inline-flex items-center gap-2" title="Autosave enabled">
+          <span className="h-2 w-2 rounded-full bg-slate-400" aria-hidden />
         </span>
       );
       break;

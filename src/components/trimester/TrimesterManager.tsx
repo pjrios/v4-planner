@@ -1,8 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { differenceInBusinessDays, differenceInCalendarWeeks, format, parseISO } from 'date-fns';
-import { CalendarDays, PencilLine, Plus, X } from 'lucide-react';
+import { CalendarDays, PencilLine, Plus, RefreshCcw, X } from 'lucide-react';
 import type { AcademicStatus, Trimester } from '../../data/types';
-import { DataStore } from '../../data/db';
+import { DataStore, db } from '../../data/db';
+
+function calculateAcademicYearSpan(trimesters: Trimester[]): string {
+  if (trimesters.length === 0) return 'Not set';
+  
+  try {
+    const dates = trimesters
+      .map((t) => [parseISO(t.startDate), parseISO(t.endDate)])
+      .flat();
+    
+    const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+    const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+    
+    const startYear = minDate.getFullYear();
+    const endYear = maxDate.getFullYear();
+    
+    // If all dates are in the same year, return single year
+    if (startYear === endYear) {
+      return `${startYear}`;
+    }
+    
+    return `${startYear}-${endYear}`;
+  } catch {
+    return 'Not set';
+  }
+}
 
 const STATUS_LABELS: Record<AcademicStatus, string> = {
   upcoming: 'Upcoming',
@@ -24,7 +49,7 @@ type FormState = {
 
 function createEmptyForm(): FormState {
   const today = new Date();
-  const defaultYear = `${today.getFullYear()}-${today.getFullYear() + 1}`;
+  const defaultYear = `${today.getFullYear()}`;
   return {
     id: null,
     name: '',
@@ -97,6 +122,103 @@ export function TrimesterManager() {
     void loadTrimesters();
   }, [loadTrimesters]);
 
+  // Listen for changes to trimesters
+  useEffect(() => {
+    const handler = (changes: Array<{ table: string | undefined }>) => {
+      let shouldReload = false;
+
+      for (const change of changes) {
+        if (change.table === 'trimesters') {
+          shouldReload = true;
+          break;
+        }
+      }
+
+      if (shouldReload) {
+        void loadTrimesters();
+      }
+    };
+
+    const rawOn = db.on as unknown;
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
+      changeEventSource.subscribe(handler);
+      return () => {
+        changeEventSource.unsubscribe?.(handler);
+      };
+    }
+
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
+
+      return () => {
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
+      };
+    }
+
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (hook: typeof hooks.creating, subscriber: () => void) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
+  }, [loadTrimesters]);
+
   const { totalWeeks, schoolDays } = useMemo(
     () => computeDurations(formState.startDate, formState.endDate),
     [formState.startDate, formState.endDate]
@@ -142,10 +264,13 @@ export function TrimesterManager() {
       return;
     }
 
+    // Auto-calculate academic year from start date
+    const year = new Date(formState.startDate).getFullYear().toString();
+
     const payload: Trimester = {
       id: formState.id ?? crypto.randomUUID(),
       name: formState.name,
-      academicYear: formState.academicYear,
+      academicYear: year,
       startDate: formState.startDate,
       endDate: formState.endDate,
       color: formState.color,
@@ -171,6 +296,8 @@ export function TrimesterManager() {
     }
   }
 
+  const academicYearSpan = calculateAcademicYearSpan(trimesters);
+
   return (
     <section aria-labelledby="trimester-manager-heading" className="rounded-3xl border border-white/10 bg-slate-900/80 p-8">
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/5 pb-6">
@@ -185,16 +312,31 @@ export function TrimesterManager() {
             <p className="text-sm text-slate-400">
               Track academic periods, adjust timelines, and color code each trimester for quick calendar scanning.
             </p>
+            {academicYearSpan !== 'Not set' && (
+              <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                Academic year: {academicYearSpan}
+              </p>
+            )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={beginCreate}
-          className="inline-flex items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-accent"
-        >
-          <Plus className="h-4 w-4" aria-hidden />
-          New trimester
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void loadTrimesters()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20"
+          >
+            <RefreshCcw className="h-4 w-4" aria-hidden />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={beginCreate}
+            className="inline-flex items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-accent"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            New trimester
+          </button>
+        </div>
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
@@ -239,11 +381,7 @@ export function TrimesterManager() {
                       </button>
                     </div>
                   </div>
-                  <dl className="grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-500">Academic year</dt>
-                      <dd className="font-medium text-white/90">{trimester.academicYear}</dd>
-                    </div>
+                  <dl className="grid gap-3 text-sm text-slate-300 sm:grid-cols-2">
                     <div>
                       <dt className="text-xs uppercase tracking-wide text-slate-500">Total weeks</dt>
                       <dd className="font-medium text-white/90">{trimester.totalWeeks}</dd>
@@ -294,20 +432,6 @@ export function TrimesterManager() {
                 value={formState.name}
                 onChange={(event) => setFormState((prev) => ({ ...prev, name: event.target.value }))}
                 placeholder="Trimester 1"
-                className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="trimester-year" className="block text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Academic year
-              </label>
-              <input
-                id="trimester-year"
-                type="text"
-                value={formState.academicYear}
-                onChange={(event) => setFormState((prev) => ({ ...prev, academicYear: event.target.value }))}
-                placeholder="2025-2026"
                 className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
             </div>

@@ -4,9 +4,9 @@ import {
   format,
   parseISO,
 } from 'date-fns';
-import { CalendarPlus, Filter, Users, X } from 'lucide-react';
+import { CalendarPlus, Filter, RefreshCcw, Users, X } from 'lucide-react';
 import type { Group, Holiday, HolidayType, Level } from '../../data/types';
-import { DataStore } from '../../data/db';
+import { DataStore, db } from '../../data/db';
 
 const HOLIDAY_TYPE_LABELS: Record<HolidayType, string> = {
   public_holiday: 'Public holiday',
@@ -142,6 +142,105 @@ export function HolidayManager() {
 
   useEffect(() => {
     void loadData();
+  }, [loadData]);
+
+  // Listen for changes to holidays, levels, and groups
+  useEffect(() => {
+    const handler = (changes: Array<{ table: string | undefined }>) => {
+      let shouldReload = false;
+
+      for (const change of changes) {
+        if (change.table === 'holidays' || change.table === 'levels' || change.table === 'groups') {
+          shouldReload = true;
+          break;
+        }
+      }
+
+      if (shouldReload) {
+        void loadData();
+      }
+    };
+
+    const rawOn = db.on as unknown;
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
+      changeEventSource.subscribe(handler);
+      return () => {
+        changeEventSource.unsubscribe?.(handler);
+      };
+    }
+
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
+
+      return () => {
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
+      };
+    }
+
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['holidays', db.holidays.hook],
+      ['levels', db.levels.hook],
+      ['groups', db.groups.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (hook: typeof hooks.creating, subscriber: () => void) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadData]);
 
   const groupsByLevel = useMemo(() => {
@@ -319,14 +418,24 @@ export function HolidayManager() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={beginCreate}
-          className="inline-flex items-center gap-2 rounded-full bg-indigo-500/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-indigo-400"
-        >
-          <CalendarPlus className="h-4 w-4" aria-hidden />
-          Add holiday
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void loadData()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20"
+          >
+            <RefreshCcw className="h-4 w-4" aria-hidden />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={beginCreate}
+            className="inline-flex items-center gap-2 rounded-full bg-indigo-500/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-indigo-400"
+          >
+            <CalendarPlus className="h-4 w-4" aria-hidden />
+            Add holiday
+          </button>
+        </div>
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">

@@ -1,0 +1,2 @@
+export { StructureWorkspace } from './StructureWorkspace';
+

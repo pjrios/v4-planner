@@ -2,6 +2,8 @@ import Dexie, { Table } from 'dexie';
 import type {
   ActivityTemplate,
   BackupPayload,
+  Document,
+  DocumentVector,
   Group,
   Holiday,
   Lesson,
@@ -26,6 +28,8 @@ export class AgendaPlannerDB extends Dexie {
   rubrics!: Table<Rubric, string>;
   resources!: Table<Resource, string>;
   templates!: Table<ActivityTemplate, string>;
+  documents!: Table<Document, string>;
+  documentVectors!: Table<DocumentVector, string>;
 
   constructor() {
     super('agenda_planner');
@@ -45,6 +49,14 @@ export class AgendaPlannerDB extends Dexie {
 
     this.version(2).stores({
       placeholderSlots: 'id,scheduleId,groupId,trimesterId,date',
+      documents: null,
+      documentVectors: null,
+    });
+
+    this.version(3).stores({
+      placeholderSlots: 'id,scheduleId,groupId,trimesterId,date',
+      documents: 'id,type,uploadedAt,name',
+      documentVectors: 'id,documentId,chunkIndex',
     });
   }
 }
@@ -62,7 +74,9 @@ export type CollectionName =
   | 'lessons'
   | 'rubrics'
   | 'resources'
-  | 'templates';
+  | 'templates'
+  | 'documents'
+  | 'documentVectors';
 
 type CollectionEntityMap = {
   trimesters: Trimester;
@@ -76,6 +90,8 @@ type CollectionEntityMap = {
   rubrics: Rubric;
   resources: Resource;
   templates: ActivityTemplate;
+  documents: Document;
+  documentVectors: DocumentVector;
 };
 
 const tables: { [K in CollectionName]: Table<CollectionEntityMap[K], string> } = {
@@ -90,6 +106,8 @@ const tables: { [K in CollectionName]: Table<CollectionEntityMap[K], string> } =
   rubrics: db.rubrics,
   resources: db.resources,
   templates: db.templates,
+  documents: db.documents,
+  documentVectors: db.documentVectors,
 };
 
 function getTable<K extends CollectionName>(collection: K) {
@@ -153,6 +171,8 @@ export const DataStore = {
       rubrics: await db.rubrics.toArray(),
       resources: await db.resources.toArray(),
       templates: await db.templates.toArray(),
+      documents: await db.documents.toArray(),
+      documentVectors: await db.documentVectors.toArray(),
     };
 
     const payload: BackupPayload = {
@@ -183,6 +203,8 @@ export const DataStore = {
       'rubrics',
       'resources',
       'templates',
+      'documents',
+      'documentVectors',
     ];
 
     const tablesInTransaction = collectionNames.map((name) => getTable(name));

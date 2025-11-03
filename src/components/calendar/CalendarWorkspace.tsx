@@ -815,7 +815,11 @@ export function CalendarWorkspace() {
           latestRequestedRange.current?.key === rangeKey &&
           latestRequestedRange.current?.token === requestToken
         ) {
-          console.error('Failed to load calendar events for range', error);
+          console.error('Failed to load calendar events for range', error, {
+            paddedStart,
+            paddedEnd,
+            rangeKey,
+          });
           setRangeError('Unable to load calendar events for the selected range. Please try again.');
           setCalendarData((current) => ({
             ...current,
@@ -1883,11 +1887,35 @@ export function CalendarWorkspace() {
 
   const renderEventContent = useCallback(
     (arg: EventContentArg) => {
+      const { event, timeText } = arg;
+      
+      // For week/day views, provide simple title rendering
       if (activeView !== 'dayGridMonth') {
-        return undefined;
+        const kind = (event.extendedProps.kind as string | undefined) ?? 'lesson';
+        const groupName = event.extendedProps.groupName as string | undefined;
+        const topicName = event.extendedProps.topicName as string | undefined;
+        const placeholderLabel = event.extendedProps.placeholderLabel as string | undefined;
+        const lessonStatusLabel = event.extendedProps.statusLabel as string | undefined;
+        
+        let displayText = '';
+        if (kind === 'lesson') {
+          const status = lessonStatusLabel === 'Planned' ? '✓' : lessonStatusLabel || '';
+          displayText = `${groupName || 'Lesson'}${topicName ? ` • ${topicName}` : ''}${status ? ` ${status}` : ''}`;
+        } else {
+          displayText = `${groupName || 'Group'}${placeholderLabel ? ` • ${placeholderLabel}` : ''}`;
+        }
+        
+        return (
+          <div className="fc-event-main-frame">
+            {timeText && <div className="fc-event-time">{timeText}</div>}
+            <div className="fc-event-title-container">
+              <div className="fc-event-title fc-sticky">
+                {displayText}
+              </div>
+            </div>
+          </div>
+        );
       }
-
-      const { event } = arg;
       const kind = (event.extendedProps.kind as string | undefined) ?? 'lesson';
       const lessonStatusLabel = event.extendedProps.statusLabel as string | undefined;
       const groupName = event.extendedProps.groupName as string | undefined;
@@ -1930,7 +1958,9 @@ export function CalendarWorkspace() {
       const statusHtml =
         kind === 'lesson'
           ? lessonStatusLabel
-            ? `<span class="fc-month-chip-status">${escapeHtml(lessonStatusLabel)}</span>`
+            ? lessonStatusLabel === 'Planned'
+              ? `<span class="fc-month-chip-status">✓</span>`
+              : `<span class="fc-month-chip-status">${escapeHtml(lessonStatusLabel)}</span>`
             : ''
           : placeholderLabel
             ? `<span class="fc-month-chip-status">${escapeHtml(placeholderLabel)}</span>`
@@ -2753,19 +2783,6 @@ export function CalendarWorkspace() {
       className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8"
     >
       <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-start gap-3">
-          <span className="mt-1 flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-            <CalendarDays className="h-5 w-5" aria-hidden />
-          </span>
-          <div className="space-y-1">
-            <h2 id="calendar-workspace-heading" className="text-xl font-semibold text-white">
-              Calendar workspace
-            </h2>
-            <p id="calendar-workspace-description" className="text-sm text-slate-400">
-              Explore the agenda across month, week, and day views while we wire schedules and lessons into each slot.
-            </p>
-          </div>
-        </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -2985,7 +3002,7 @@ export function CalendarWorkspace() {
           <button
             type="button"
             aria-label="Close day details"
-            className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
             onClick={closeDayDetails}
           />
           <div

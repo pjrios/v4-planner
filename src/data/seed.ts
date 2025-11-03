@@ -23,7 +23,7 @@ const trimester2025: Trimester = {
   schoolDays: 70,
   color: '#4ECDC4',
   status: 'upcoming',
-  academicYear: '2025-2026',
+  academicYear: '2025',
 };
 
 const holidays: Holiday[] = [

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { GraduationCap, Palette, PencilLine, Plus, X } from 'lucide-react';
+import { GraduationCap, Palette, PencilLine, Plus, RefreshCcw, X } from 'lucide-react';
 import type { Level } from '../../data/types';
-import { DataStore } from '../../data/db';
+import { DataStore, db } from '../../data/db';
 
 const COLOR_PRESETS = ['#38bdf8', '#f97316', '#34d399', '#a855f7', '#ef4444', '#facc15'];
 
@@ -42,6 +42,103 @@ export function LevelManager() {
 
   useEffect(() => {
     void loadLevels();
+  }, [loadLevels]);
+
+  // Listen for changes to levels
+  useEffect(() => {
+    const handler = (changes: Array<{ table: string | undefined }>) => {
+      let shouldReload = false;
+
+      for (const change of changes) {
+        if (change.table === 'levels') {
+          shouldReload = true;
+          break;
+        }
+      }
+
+      if (shouldReload) {
+        void loadLevels();
+      }
+    };
+
+    const rawOn = db.on as unknown;
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
+      changeEventSource.subscribe(handler);
+      return () => {
+        changeEventSource.unsubscribe?.(handler);
+      };
+    }
+
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
+
+      return () => {
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
+      };
+    }
+
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['levels', db.levels.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (hook: typeof hooks.creating, subscriber: () => void) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadLevels]);
 
   const sortedLevels = useMemo(() => {
@@ -141,14 +238,24 @@ export function LevelManager() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={beginCreate}
-          className="inline-flex items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-accent"
-        >
-          <Plus className="h-4 w-4" aria-hidden />
-          New level
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void loadLevels()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20"
+          >
+            <RefreshCcw className="h-4 w-4" aria-hidden />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={beginCreate}
+            className="inline-flex items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-accent"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            New level
+          </button>
+        </div>
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">

@@ -589,32 +589,33 @@ export function LessonHub({
                                                             {week.lessons.map((lessonNode, index) => (
                                                               <li
                                                                 key={lessonNode.id}
-                                                                className="rounded-lg border border-white/10 bg-white/5 p-3"
                                                               >
-                                                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                                                  <button
-                                                                    type="button"
-                                                                    onClick={() => onOpenLesson(lessonNode.id)}
-                                                                    className="text-sm font-semibold text-white underline-offset-4 transition hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                                                                  >
-                                                                    Class {index + 1}: {lessonNode.title}
-                                                                  </button>
-                                                                  <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
-                                                                    {lessonNode.statusLabel}
-                                                                  </span>
-                                                                </div>
-                                                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-300">
-                                                                  <span className="inline-flex items-center gap-1">
-                                                                    <CalendarDays className="h-3 w-3" aria-hidden />
-                                                                    {lessonNode.dateLabel}
-                                                                  </span>
-                                                                  {lessonNode.timeLabel ? (
-                                                                    <span className="inline-flex items-center gap-1">
-                                                                      <Clock className="h-3 w-3" aria-hidden />
-                                                                      {lessonNode.timeLabel}
+                                                                <button
+                                                                  type="button"
+                                                                  onClick={() => onOpenLesson(lessonNode.id)}
+                                                                  className="group w-full rounded-lg border border-white/10 bg-white/5 p-3 text-left transition hover:border-white/20 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                                                                >
+                                                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                    <span className="text-sm font-semibold text-white group-hover:text-accent">
+                                                                      Class {index + 1}: {lessonNode.title}
                                                                     </span>
-                                                                  ) : null}
-                                                                </div>
+                                                                    <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+                                                                      {lessonNode.statusLabel}
+                                                                    </span>
+                                                                  </div>
+                                                                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                                                                    <span className="inline-flex items-center gap-1">
+                                                                      <CalendarDays className="h-3 w-3" aria-hidden />
+                                                                      {lessonNode.dateLabel}
+                                                                    </span>
+                                                                    {lessonNode.timeLabel ? (
+                                                                      <span className="inline-flex items-center gap-1">
+                                                                        <Clock className="h-3 w-3" aria-hidden />
+                                                                        {lessonNode.timeLabel}
+                                                                      </span>
+                                                                    ) : null}
+                                                                  </div>
+                                                                </button>
                                                               </li>
                                                             ))}
                                                           </ul>

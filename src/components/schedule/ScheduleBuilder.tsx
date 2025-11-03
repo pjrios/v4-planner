@@ -4,11 +4,13 @@ import {
   CalendarRange,
   CheckCircle2,
   Clock,
+  PencilLine,
   Plus,
   RefreshCcw,
+  RotateCw,
   Trash2,
 } from 'lucide-react';
-import { DataStore } from '../../data/db';
+import { DataStore, db } from '../../data/db';
 import { recomputePlaceholdersForSchedule } from '../../data/placeholders';
 import type { Group, Level, Schedule, ScheduleSession, Trimester } from '../../data/types';
 
@@ -108,6 +110,7 @@ export function ScheduleBuilder() {
 
   const [draftSessions, setDraftSessions] = useState<ScheduleSession[]>([]);
   const [sessionForm, setSessionForm] = useState<ScheduleSession>(INITIAL_SESSION);
+  const [editingSessionIndex, setEditingSessionIndex] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -131,6 +134,106 @@ export function ScheduleBuilder() {
 
   useEffect(() => {
     void loadData();
+  }, [loadData]);
+
+  // Listen for changes to trimesters, levels, groups, and schedules
+  useEffect(() => {
+    const handler = (changes: Array<{ table: string | undefined }>) => {
+      let shouldReload = false;
+
+      for (const change of changes) {
+        if (change.table === 'trimesters' || change.table === 'levels' || change.table === 'groups' || change.table === 'schedules') {
+          shouldReload = true;
+          break;
+        }
+      }
+
+      if (shouldReload) {
+        void loadData();
+      }
+    };
+
+    const rawOn = db.on as unknown;
+    const changeEventSource =
+      rawOn && typeof rawOn === 'object' && 'changes' in rawOn
+        ? (rawOn as {
+            changes?: {
+              subscribe?: (listener: typeof handler) => void;
+              unsubscribe?: (listener: typeof handler) => void;
+            };
+          }).changes
+        : undefined;
+
+    if (changeEventSource && typeof changeEventSource.subscribe === 'function') {
+      changeEventSource.subscribe(handler);
+      return () => {
+        changeEventSource.unsubscribe?.(handler);
+      };
+    }
+
+    if (typeof rawOn === 'function' && rawOn && 'changes' in rawOn) {
+      try {
+        const directOn = rawOn as unknown as (eventName: string, subscriber: typeof handler) => void;
+        directOn('changes', handler);
+      } catch {
+        return () => undefined;
+      }
+
+      return () => {
+        const maybeChanges =
+          typeof rawOn === 'function' && rawOn && 'changes' in rawOn
+            ? (rawOn as unknown as { changes?: { unsubscribe?: (listener: typeof handler) => void } }).changes
+            : undefined;
+        maybeChanges?.unsubscribe?.(handler);
+      };
+    }
+
+    const fallbackCleanups: Array<() => void> = [];
+    const tablesToWatch = [
+      ['trimesters', db.trimesters.hook],
+      ['levels', db.levels.hook],
+      ['groups', db.groups.hook],
+      ['schedules', db.schedules.hook],
+    ] as const;
+
+    for (const [table, hooks] of tablesToWatch) {
+      if (!hooks) {
+        continue;
+      }
+
+      const emit = () => {
+        handler([{ table }]);
+      };
+
+      const subscribeToHook = (hook: typeof hooks.creating, subscriber: () => void) => {
+        const subscribeFn = hook?.subscribe;
+        if (typeof subscribeFn !== 'function') {
+          return;
+        }
+
+        subscribeFn.call(hook, subscriber);
+        fallbackCleanups.push(() => {
+          try {
+            const unsubscribeFn = hook?.unsubscribe;
+            if (typeof unsubscribeFn === 'function') {
+              unsubscribeFn.call(hook, subscriber);
+            }
+          } catch (error) {
+            console.warn('Failed to remove Dexie table hook listener', error);
+          }
+        });
+      };
+
+      subscribeToHook(hooks.creating, emit);
+      subscribeToHook(hooks.updating, emit);
+      subscribeToHook(hooks.deleting, emit);
+    }
+
+    return () => {
+      for (const cleanup of fallbackCleanups) {
+        cleanup();
+      }
+    };
   }, [loadData]);
 
   useEffect(() => {
@@ -267,6 +370,7 @@ export function ScheduleBuilder() {
 
   function resetForm() {
     setSessionForm(INITIAL_SESSION);
+    setEditingSessionIndex(null);
   }
 
   function handleSessionFormChange(update: Partial<ScheduleSession>) {
@@ -292,19 +396,47 @@ export function ScheduleBuilder() {
       return;
     }
 
-    if (hasConflict(draftSessions, sessionForm)) {
+    // Check conflicts but exclude the session being edited
+    const sessionsToCheck = editingSessionIndex !== null 
+      ? draftSessions.filter((_, idx) => idx !== editingSessionIndex)
+      : draftSessions;
+    
+    const conflictTest = hasConflict(sessionsToCheck, sessionForm);
+    if (conflictTest) {
       setFeedback({ type: 'error', message: 'This session overlaps with an existing session for the day.' });
       return;
     }
 
-    setDraftSessions((current) => sortSessions([...current, sessionForm]));
-    setFeedback({ type: 'success', message: `${DAYS_OF_WEEK[dayOfWeek - 1]?.label ?? 'Day'} session added.` });
+    if (editingSessionIndex !== null) {
+      // Update existing session
+      setDraftSessions((current) => {
+        const updated = [...current];
+        updated[editingSessionIndex] = sessionForm;
+        return sortSessions(updated);
+      });
+      setFeedback({ type: 'success', message: `${DAYS_OF_WEEK[dayOfWeek - 1]?.label ?? 'Day'} session updated.` });
+    } else {
+      // Add new session
+      setDraftSessions((current) => sortSessions([...current, sessionForm]));
+      setFeedback({ type: 'success', message: `${DAYS_OF_WEEK[dayOfWeek - 1]?.label ?? 'Day'} session added.` });
+    }
     resetForm();
+  }
+
+  function handleEditSession(index: number) {
+    const session = draftSessions[index];
+    if (session) {
+      setSessionForm(session);
+      setEditingSessionIndex(index);
+    }
   }
 
   function handleRemoveSession(index: number) {
     setDraftSessions((current) => current.filter((_, idx) => idx !== index));
     setFeedback(null);
+    if (editingSessionIndex === index) {
+      resetForm();
+    }
   }
 
   async function handleRestore() {
@@ -420,6 +552,14 @@ export function ScheduleBuilder() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void loadData()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20"
+          >
+            <RotateCw className="h-4 w-4" aria-hidden />
+            Refresh
+          </button>
           <button
             type="button"
             onClick={handleRestore}
@@ -624,8 +764,17 @@ export function ScheduleBuilder() {
               className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-200/10 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-200/20"
             >
               <Plus className="h-4 w-4" aria-hidden />
-              Add session
+              {editingSessionIndex !== null ? 'Update session' : 'Add session'}
             </button>
+            {editingSessionIndex !== null && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/5"
+              >
+                Cancel
+              </button>
+            )}
           </form>
 
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-6">
@@ -637,7 +786,11 @@ export function ScheduleBuilder() {
                   return (
                     <li
                       key={`${session.dayOfWeek}-${session.startTime}-${session.endTime}-${index}`}
-                      className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-slate-200"
+                      className={`flex items-center justify-between gap-4 rounded-2xl border px-4 py-3 text-sm text-slate-200 ${
+                        editingSessionIndex === index
+                          ? 'border-accent/60 bg-accent/10'
+                          : 'border-white/10 bg-slate-900/70'
+                      }`}
                     >
                       <div className="flex flex-col">
                         <span className="text-xs uppercase tracking-wide text-slate-500">{day?.short ?? session.dayOfWeek}</span>
@@ -645,14 +798,24 @@ export function ScheduleBuilder() {
                           {session.startTime} – {session.endTime}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveSession(index)}
-                        className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:border-white/20"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                        Remove
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleEditSession(index)}
+                          className="inline-flex items-center gap-2 rounded-full border border-accent/50 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent transition hover:border-accent/70 hover:bg-accent/20"
+                        >
+                          <PencilLine className="h-3.5 w-3.5" aria-hidden />
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveSession(index)}
+                          className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:border-white/20"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                          Remove
+                        </button>
+                      </div>
                     </li>
                   );
                 })}
